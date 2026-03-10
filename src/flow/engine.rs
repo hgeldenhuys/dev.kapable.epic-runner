@@ -15,7 +15,6 @@ pub struct FlowContext {
     pub model_override: Option<String>,
     pub effort_override: Option<String>,
     pub add_dirs: Vec<String>,
-    pub project_id: String,
 }
 
 /// Result of executing one node.

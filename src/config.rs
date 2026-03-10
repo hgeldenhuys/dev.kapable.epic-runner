@@ -16,6 +16,8 @@ pub struct ApiSection {
 pub struct ProjectSection {
     pub project_id: Option<String>,
     pub product: Option<String>,
+    /// Project-scoped data key (sk_live_*) for Data API + _meta operations
+    pub data_key: Option<String>,
     /// Flow ID for ceremony sequence (optional — uses default if absent)
     pub ceremony_flow_id: Option<String>,
 }
@@ -29,6 +31,9 @@ impl EpicRunnerConfig {
     }
     pub fn project_id(&self) -> Option<&str> {
         self.project.as_ref()?.project_id.as_deref()
+    }
+    pub fn data_key(&self) -> Option<&str> {
+        self.project.as_ref()?.data_key.as_deref()
     }
     pub fn ceremony_flow_id(&self) -> Option<&str> {
         self.project.as_ref()?.ceremony_flow_id.as_deref()

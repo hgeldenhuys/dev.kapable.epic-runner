@@ -11,7 +11,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "KAPABLE_API_URL")]
     pub url: Option<String>,
 
-    #[arg(long, global = true, env = "KAPABLE_ADMIN_API_KEY")]
+    #[arg(long, global = true)]
     pub key: Option<String>,
 
     #[arg(long, global = true, default_value = "false")]

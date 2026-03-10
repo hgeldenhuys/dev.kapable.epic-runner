@@ -41,8 +41,6 @@ pub async fn run(
     client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     // 0. PRE-FLIGHT
     let claude_check = std::process::Command::new("claude")
         .arg("--version")
@@ -71,10 +69,7 @@ pub async fn run(
 
     // 1. Look up epic
     let epics: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!(
-            "/v1/data/{project_id}/epics?code={}",
-            args.epic_code
-        ))
+        .get(&format!("/v1/epics?code={}", args.epic_code))
         .await?;
     let epic_data = epics
         .data
@@ -87,8 +82,7 @@ pub async fn run(
     }
 
     // 2. Check impediments
-    let blocking =
-        crate::impediments::check_blocking_impediments(client, &project_id, &epic.code).await?;
+    let blocking = crate::impediments::check_blocking_impediments(client, &epic.code).await?;
     if !blocking.is_empty() {
         return Err(format!(
             "Epic {} has {} open impediment(s)",
@@ -144,19 +138,15 @@ pub async fn run(
             "session_id": session_id.to_string(),
             "status": "planning",
         });
-        let sprint_resp: DataWrapper<serde_json::Value> = client
-            .post(&format!("/v1/data/{project_id}/sprints"), &sprint_body)
-            .await?;
+        let sprint_resp: DataWrapper<serde_json::Value> =
+            client.post("/v1/sprints", &sprint_body).await?;
         let sprint_id = sprint_resp.data["id"]
             .as_str()
             .ok_or("Sprint creation failed")?;
 
         // Load and assign stories (take up to 5 ready stories)
         let stories: DataWrapper<Vec<serde_json::Value>> = client
-            .get(&format!(
-                "/v1/data/{project_id}/stories?epic_code={}&status=ready",
-                epic.code
-            ))
+            .get(&format!("/v1/stories?epic_code={}&status=ready", epic.code))
             .await?;
 
         if stories.data.is_empty() && sprint_num > 1 {
@@ -172,7 +162,7 @@ pub async fn run(
 
         let _: DataWrapper<serde_json::Value> = client
             .patch(
-                &format!("/v1/data/{project_id}/sprints/{sprint_id}"),
+                &format!("/v1/sprints/{sprint_id}"),
                 &json!({ "stories": serde_json::to_value(&batch)? }),
             )
             .await?;
@@ -181,7 +171,7 @@ pub async fn run(
         for sid in &story_ids {
             let _: Result<DataWrapper<serde_json::Value>, _> = client
                 .patch(
-                    &format!("/v1/data/{project_id}/stories/{sid}"),
+                    &format!("/v1/stories/{sid}"),
                     &json!({ "status": "planned" }),
                 )
                 .await;
@@ -211,7 +201,7 @@ pub async fn run(
                 eprintln!("Intent satisfied — closing epic {}", epic.code);
                 let _: DataWrapper<serde_json::Value> = client
                     .patch(
-                        &format!("/v1/data/{project_id}/epics/{}", epic.id),
+                        &format!("/v1/epics/{}", epic.id),
                         &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
                     )
                     .await?;
@@ -226,7 +216,7 @@ pub async fn run(
                 eprintln!("Epic {} is BLOCKED by impediment", epic.code);
                 let _: DataWrapper<serde_json::Value> = client
                     .patch(
-                        &format!("/v1/data/{project_id}/epics/{}", epic.id),
+                        &format!("/v1/epics/{}", epic.id),
                         &json!({ "status": "blocked" }),
                     )
                     .await?;

@@ -48,8 +48,6 @@ pub async fn run(
     client: &ApiClient,
     cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     match args.action {
         EpicAction::Create {
             product,
@@ -59,9 +57,8 @@ pub async fn run(
             criteria,
         } => {
             // Resolve product slug
-            let products: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/products?slug={product}"))
-                .await?;
+            let products: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/products?slug={product}")).await?;
             let product_data = products
                 .data
                 .first()
@@ -71,7 +68,7 @@ pub async fn run(
             // Determine instance number (count existing epics in this domain)
             let existing: DataWrapper<Vec<serde_json::Value>> = client
                 .get(&format!(
-                    "/v1/data/{project_id}/epics?product_id={product_id}&domain={domain}"
+                    "/v1/epics?product_id={product_id}&domain={domain}"
                 ))
                 .await?;
             let instance = existing.data.len() as i32 + 1;
@@ -92,9 +89,7 @@ pub async fn run(
                 "status": "active",
                 "worktree_name": worktree_name,
             });
-            let resp: DataWrapper<serde_json::Value> = client
-                .post(&format!("/v1/data/{project_id}/epics"), &body)
-                .await?;
+            let resp: DataWrapper<serde_json::Value> = client.post("/v1/epics", &body).await?;
 
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp.data)?);
@@ -106,14 +101,13 @@ pub async fn run(
             }
         }
         EpicAction::List { product, status } => {
-            let mut query = format!("/v1/data/{project_id}/epics?");
+            let mut query = "/v1/epics?".to_string();
             if let Some(s) = &status {
                 query.push_str(&format!("status={s}&"));
             }
             if let Some(p) = &product {
-                let products: DataWrapper<Vec<serde_json::Value>> = client
-                    .get(&format!("/v1/data/{project_id}/products?slug={p}"))
-                    .await?;
+                let products: DataWrapper<Vec<serde_json::Value>> =
+                    client.get(&format!("/v1/products?slug={p}")).await?;
                 if let Some(pid) = products.data.first().and_then(|p| p["id"].as_str()) {
                     query.push_str(&format!("product_id={pid}&"));
                 }
@@ -139,9 +133,8 @@ pub async fn run(
             }
         }
         EpicAction::Show { code } => {
-            let resp: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/epics?code={code}"))
-                .await?;
+            let resp: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/epics?code={code}")).await?;
             let epic = resp
                 .data
                 .first()
@@ -149,33 +142,29 @@ pub async fn run(
             println!("{}", serde_json::to_string_pretty(epic)?);
         }
         EpicAction::Close { code } => {
-            let resp: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/epics?code={code}"))
-                .await?;
+            let resp: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/epics?code={code}")).await?;
             let epic = resp
                 .data
                 .first()
                 .ok_or(format!("Epic '{code}' not found"))?;
             let id = epic["id"].as_str().ok_or("Epic has no id")?;
             let body = json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() });
-            let _: DataWrapper<serde_json::Value> = client
-                .patch(&format!("/v1/data/{project_id}/epics/{id}"), &body)
-                .await?;
+            let _: DataWrapper<serde_json::Value> =
+                client.patch(&format!("/v1/epics/{id}"), &body).await?;
             eprintln!("Epic {code} closed");
         }
         EpicAction::Abandon { code } => {
-            let resp: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/epics?code={code}"))
-                .await?;
+            let resp: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/epics?code={code}")).await?;
             let epic = resp
                 .data
                 .first()
                 .ok_or(format!("Epic '{code}' not found"))?;
             let id = epic["id"].as_str().ok_or("Epic has no id")?;
             let body = json!({ "status": "abandoned" });
-            let _: DataWrapper<serde_json::Value> = client
-                .patch(&format!("/v1/data/{project_id}/epics/{id}"), &body)
-                .await?;
+            let _: DataWrapper<serde_json::Value> =
+                client.patch(&format!("/v1/epics/{id}"), &body).await?;
             eprintln!("Epic {code} abandoned");
         }
     }

@@ -42,11 +42,9 @@ pub async fn run(
     client: &ApiClient,
     cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     match args.action {
         ImpedimentAction::List { epic, status } => {
-            let mut query = format!("/v1/data/{project_id}/impediments?");
+            let mut query = "/v1/impediments?".to_string();
             if let Some(e) = &epic {
                 query.push_str(&format!("blocking_epic={e}&"));
             }
@@ -82,9 +80,8 @@ pub async fn run(
             product,
         } => {
             // Resolve product slug
-            let products: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/products?slug={product}"))
-                .await?;
+            let products: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/products?slug={product}")).await?;
             let product_id = products
                 .data
                 .first()
@@ -99,9 +96,8 @@ pub async fn run(
                 "description": description,
                 "status": "open",
             });
-            let resp: DataWrapper<serde_json::Value> = client
-                .post(&format!("/v1/data/{project_id}/impediments"), &body)
-                .await?;
+            let resp: DataWrapper<serde_json::Value> =
+                client.post("/v1/impediments", &body).await?;
 
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp.data)?);
@@ -120,7 +116,7 @@ pub async fn run(
                 "resolved_at": chrono::Utc::now().to_rfc3339(),
             });
             let _: DataWrapper<serde_json::Value> = client
-                .patch(&format!("/v1/data/{project_id}/impediments/{id}"), &body)
+                .patch(&format!("/v1/impediments/{id}"), &body)
                 .await?;
             eprintln!("Impediment {id} resolved");
         }

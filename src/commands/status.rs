@@ -16,13 +16,11 @@ pub async fn run(
     client: &ApiClient,
     cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     // Load products
     let products_query = if let Some(slug) = &args.product {
-        format!("/v1/data/{project_id}/products?slug={slug}")
+        format!("/v1/products?slug={slug}")
     } else {
-        format!("/v1/data/{project_id}/products")
+        "/v1/products".to_string()
     };
     let products: DataWrapper<Vec<serde_json::Value>> = client.get(&products_query).await?;
 
@@ -44,9 +42,8 @@ pub async fn run(
         eprintln!("Product: {name}");
 
         // Load epics
-        let epics: DataWrapper<Vec<serde_json::Value>> = client
-            .get(&format!("/v1/data/{project_id}/epics?product_id={pid}"))
-            .await?;
+        let epics: DataWrapper<Vec<serde_json::Value>> =
+            client.get(&format!("/v1/epics?product_id={pid}")).await?;
 
         let mut table = Table::new();
         table.set_header(vec!["Epic", "Status", "Sprints", "Stories"]);
@@ -58,13 +55,12 @@ pub async fn run(
 
             // Count sprints
             let sprints: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/sprints?epic_id={epic_id}"))
+                .get(&format!("/v1/sprints?epic_id={epic_id}"))
                 .await?;
 
             // Count stories
-            let stories: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/stories?epic_code={code}"))
-                .await?;
+            let stories: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/stories?epic_code={code}")).await?;
 
             let done_count = stories
                 .data
@@ -85,9 +81,8 @@ pub async fn run(
         println!("{table}");
 
         // Impediments
-        let impediments: DataWrapper<Vec<serde_json::Value>> = client
-            .get(&format!("/v1/data/{project_id}/impediments?status=open"))
-            .await?;
+        let impediments: DataWrapper<Vec<serde_json::Value>> =
+            client.get("/v1/impediments?status=open").await?;
         if !impediments.data.is_empty() {
             eprintln!("\n⚠ {} open impediment(s)", impediments.data.len());
             for imp in &impediments.data {

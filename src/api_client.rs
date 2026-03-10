@@ -29,6 +29,15 @@ pub enum ApiError {
 pub const DEFAULT_API_URL: &str = "https://api.kapable.dev";
 
 impl ApiClient {
+    /// Create a client with explicit URL and key (no config cascade).
+    pub fn new(base_url: &str, api_key: &str) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+        }
+    }
+
     pub fn from_env_with_overrides(
         url_override: Option<String>,
         key_override: Option<String>,
@@ -52,7 +61,20 @@ impl ApiClient {
             })
             .unwrap_or_else(|| DEFAULT_API_URL.to_string());
 
+        // Key cascade: CLI flag → env KAPABLE_DATA_KEY → config data_key → env KAPABLE_ADMIN_API_KEY → config api_key
+        // Prefer project-scoped data keys (sk_live_) over admin keys (sk_admin_)
         let api_key = key_override
+            .or_else(|| std::env::var("KAPABLE_DATA_KEY").ok())
+            .or_else(|| {
+                project_config
+                    .as_ref()
+                    .and_then(|c| c.data_key().map(String::from))
+            })
+            .or_else(|| {
+                home_config
+                    .as_ref()
+                    .and_then(|c| c.data_key().map(String::from))
+            })
             .or_else(|| std::env::var("KAPABLE_ADMIN_API_KEY").ok())
             .or_else(|| {
                 project_config
@@ -64,7 +86,7 @@ impl ApiClient {
                     .as_ref()
                     .and_then(|c| c.api_key().map(String::from))
             })
-            .ok_or("No API key (--key, KAPABLE_ADMIN_API_KEY, or .epic-runner/config.toml)")?;
+            .ok_or("No API key (--key, KAPABLE_DATA_KEY, or .epic-runner/config.toml)")?;
 
         Ok(Self {
             client: Client::new(),
@@ -106,6 +128,21 @@ impl ApiClient {
         let resp = self
             .client
             .patch(format!("{}{}", self.base_url, path))
+            .header("x-api-key", &self.api_key)
+            .json(body)
+            .send()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    pub async fn put<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let resp = self
+            .client
+            .put(format!("{}{}", self.base_url, path))
             .header("x-api-key", &self.api_key)
             .json(body)
             .send()

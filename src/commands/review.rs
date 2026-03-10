@@ -19,14 +19,9 @@ pub async fn run(
     client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     // Load epic
     let epics: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!(
-            "/v1/data/{project_id}/epics?code={}",
-            args.epic_code
-        ))
+        .get(&format!("/v1/epics?code={}", args.epic_code))
         .await?;
     let epic = epics
         .data
@@ -39,7 +34,7 @@ pub async fn run(
 
     // Load sprints
     let sprints: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!("/v1/data/{project_id}/sprints?epic_id={epic_id}"))
+        .get(&format!("/v1/sprints?epic_id={epic_id}"))
         .await?;
 
     let sprint_summary = serde_json::to_string_pretty(&sprints.data)?;

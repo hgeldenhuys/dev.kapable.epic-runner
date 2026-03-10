@@ -27,14 +27,11 @@ pub async fn run(
     client: &ApiClient,
     cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     match args.action {
         SprintAction::List { epic } => {
             // Resolve epic code to ID
-            let epics: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/epics?code={epic}"))
-                .await?;
+            let epics: DataWrapper<Vec<serde_json::Value>> =
+                client.get(&format!("/v1/epics?code={epic}")).await?;
             let epic_data = epics
                 .data
                 .first()
@@ -42,7 +39,7 @@ pub async fn run(
             let epic_id = epic_data["id"].as_str().ok_or("Epic has no id")?;
 
             let resp: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/sprints?epic_id={epic_id}"))
+                .get(&format!("/v1/sprints?epic_id={epic_id}"))
                 .await?;
 
             if cli.json {
@@ -73,9 +70,8 @@ pub async fn run(
             }
         }
         SprintAction::Show { id } => {
-            let resp: DataWrapper<serde_json::Value> = client
-                .get(&format!("/v1/data/{project_id}/sprints/{id}"))
-                .await?;
+            let resp: DataWrapper<serde_json::Value> =
+                client.get(&format!("/v1/sprints/{id}")).await?;
             println!("{}", serde_json::to_string_pretty(&resp.data)?);
         }
     }

@@ -19,11 +19,9 @@ pub async fn run(
     client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     // Load sprint
     let sprint: DataWrapper<serde_json::Value> = client
-        .get(&format!("/v1/data/{project_id}/sprints/{}", args.sprint_id))
+        .get(&format!("/v1/sprints/{}", args.sprint_id))
         .await?;
 
     let ceremony_log = sprint.data["ceremony_log"]

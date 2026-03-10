@@ -33,26 +33,20 @@ pub async fn run(
     client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     // 1. Load sprint from DB
     let sprint_resp: DataWrapper<serde_json::Value> = client
-        .get(&format!("/v1/data/{project_id}/sprints/{}", args.sprint_id))
+        .get(&format!("/v1/sprints/{}", args.sprint_id))
         .await?;
     let sprint: Sprint = serde_json::from_value(sprint_resp.data)?;
 
     // 2. Load epic
-    let epic_resp: DataWrapper<serde_json::Value> = client
-        .get(&format!("/v1/data/{project_id}/epics/{}", sprint.epic_id))
-        .await?;
+    let epic_resp: DataWrapper<serde_json::Value> =
+        client.get(&format!("/v1/epics/{}", sprint.epic_id)).await?;
     let epic: Epic = serde_json::from_value(epic_resp.data)?;
 
     // 3. Load product for repo_path
     let product_resp: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!(
-            "/v1/data/{project_id}/products?id={}",
-            epic.product_id
-        ))
+        .get(&format!("/v1/products?id={}", epic.product_id))
         .await?;
     let product: Product = serde_json::from_value(
         product_resp
@@ -81,7 +75,7 @@ pub async fn run(
     // 5. Update sprint status to executing
     let _: DataWrapper<serde_json::Value> = client
         .patch(
-            &format!("/v1/data/{project_id}/sprints/{}", sprint.id),
+            &format!("/v1/sprints/{}", sprint.id),
             &json!({ "status": "executing", "started_at": chrono::Utc::now().to_rfc3339() }),
         )
         .await?;
@@ -96,7 +90,6 @@ pub async fn run(
         model_override: Some(args.model.clone()),
         effort_override: Some(args.effort.clone()),
         add_dirs: args.add_dir.clone(),
-        project_id: project_id.clone(),
     };
 
     // 7. Execute the ceremony flow
@@ -130,7 +123,7 @@ pub async fn run(
 
     let _: DataWrapper<serde_json::Value> = client
         .patch(
-            &format!("/v1/data/{project_id}/sprints/{}", sprint.id),
+            &format!("/v1/sprints/{}", sprint.id),
             &json!({
                 "status": final_status,
                 "finished_at": chrono::Utc::now().to_rfc3339(),
@@ -143,18 +136,12 @@ pub async fn run(
     for result in &results {
         for decision in &result.supervisor_decisions {
             let _: Result<DataWrapper<serde_json::Value>, _> = client
-                .post(
-                    &format!("/v1/data/{project_id}/supervisor_decisions"),
-                    &serde_json::to_value(decision)?,
-                )
+                .post("/v1/supervisor_decisions", &serde_json::to_value(decision)?)
                 .await;
         }
         for duck in &result.rubber_duck_sessions {
             let _: Result<DataWrapper<serde_json::Value>, _> = client
-                .post(
-                    &format!("/v1/data/{project_id}/rubber_duck_sessions"),
-                    &serde_json::to_value(duck)?,
-                )
+                .post("/v1/rubber_duck_sessions", &serde_json::to_value(duck)?)
                 .await;
         }
     }

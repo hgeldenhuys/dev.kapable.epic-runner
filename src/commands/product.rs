@@ -36,8 +36,6 @@ pub async fn run(
     client: &ApiClient,
     cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_id = crate::config::resolve_project_id()?;
-
     match args.action {
         ProductAction::Create {
             name,
@@ -51,9 +49,7 @@ pub async fn run(
                 "repo_path": repo_path,
                 "description": description,
             });
-            let resp: DataWrapper<serde_json::Value> = client
-                .post(&format!("/v1/data/{project_id}/products"), &body)
-                .await?;
+            let resp: DataWrapper<serde_json::Value> = client.post("/v1/products", &body).await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp.data)?);
             } else {
@@ -62,9 +58,7 @@ pub async fn run(
             }
         }
         ProductAction::List => {
-            let resp: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/data/{project_id}/products"))
-                .await?;
+            let resp: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/products").await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp.data)?);
             } else {
@@ -83,9 +77,8 @@ pub async fn run(
             }
         }
         ProductAction::Show { id } => {
-            let resp: DataWrapper<serde_json::Value> = client
-                .get(&format!("/v1/data/{project_id}/products/{id}"))
-                .await?;
+            let resp: DataWrapper<serde_json::Value> =
+                client.get(&format!("/v1/products/{id}")).await?;
             println!("{}", serde_json::to_string_pretty(&resp.data)?);
         }
     }
