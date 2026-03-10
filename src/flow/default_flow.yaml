@@ -1,0 +1,190 @@
+name: "Default Sprint Ceremony"
+version: "1.0.0"
+description: |
+  Standard ceremony sequence: research → groom → execute (supervised) → judge → SM retro.
+  Gates short-circuit on failure. SM retro always runs.
+
+nodes:
+  - key: source
+    node_type: source
+    label: "Epic Context"
+    config: {}
+
+  - key: research
+    node_type: harness
+    label: "Research (read-only)"
+    config:
+      model: sonnet
+      effort: high
+      budget_usd: 1.0
+      chrome: false
+      heartbeat_timeout_secs: 180
+      allowed_tools:
+        - Read
+        - Glob
+        - Grep
+        - "Bash(git *)"
+        - "Bash(ls *)"
+        - WebSearch
+        - WebFetch
+      system_prompt: |
+        You are a research agent. Read-only. Do NOT edit files.
+        Epic: {{epic.code}} — {{epic.title}}
+        Intent: {{epic.intent}}
+        Find: relevant files, existing patterns, dependencies, blockers.
+      prompt: |
+        Research the codebase for epic {{epic.code}}. Find all relevant files,
+        existing patterns, and potential blockers. Output a structured research brief.
+
+  - key: gate_research
+    node_type: gate
+    label: "Research OK?"
+    config:
+      gate_field: status
+      gate_expect: completed
+
+  - key: groom
+    node_type: harness
+    label: "Groom (DoR + ACs)"
+    config:
+      model: sonnet
+      effort: high
+      budget_usd: 1.0
+      chrome: false
+      heartbeat_timeout_secs: 180
+      system_prompt: |
+        You are a scrum master grooming stories for epic {{epic.code}}.
+        Apply Definition of Ready. Add acceptance criteria. Estimate points.
+      prompt: |
+        Groom the backlog stories tagged with epic {{epic.code}}. For each story:
+        1. Add specific acceptance criteria
+        2. Add file paths and line numbers
+        3. Estimate story points (1/2/3/5/8)
+        4. Apply DoD checklist
+        Output groomed stories as JSON array.
+
+  - key: gate_groom
+    node_type: gate
+    label: "Groom OK?"
+    config:
+      gate_field: status
+      gate_expect: completed
+
+  - key: execute
+    node_type: loop
+    label: "Supervised Execute"
+    config:
+      model: opus
+      effort: max
+      budget_usd: 10.0
+      chrome: true
+      heartbeat_timeout_secs: 300
+      loop_max: 5
+      rubber_duck_after: 2
+      system_prompt: |
+        You are a senior developer executing sprint {{sprint.number}} of epic {{epic.code}}.
+        Intent: {{epic.intent}}
+        Stories: {{stories}}
+        Rules:
+        - Commit after each story
+        - Run tests after each change
+        - Execute autonomously — no confirmations
+        - If blocked, say 'blocked by <EPIC_CODE>'
+        - Deploy before finishing
+      prompt: |
+        Execute all stories for sprint {{sprint.number}} of epic {{epic.code}}.
+        Build, test, commit, deploy. Report completion status.
+
+  - key: gate_execute
+    node_type: gate
+    label: "No Impediment?"
+    config:
+      gate_field: impediment_raised
+      gate_expect: "false"
+
+  - key: judge
+    node_type: agent
+    label: "LLM Judge (Chrome)"
+    config:
+      model: sonnet
+      effort: high
+      budget_usd: 3.0
+      chrome: true
+      heartbeat_timeout_secs: 300
+      system_prompt: |
+        You are an independent judge evaluating whether this epic's intent is satisfied.
+        Epic: {{epic.code}} — {{epic.title}}
+        Intent: {{epic.intent}}
+        Success criteria: {{epic.success_criteria}}
+        Exercise the deployed app in Chrome. Take screenshots. Verify each criterion.
+        Output ONLY valid JSON: {"intent_satisfied": bool, "confidence": 0-1,
+        "criteria_results": [...], "summary": "...", "evidence": [...]}
+      prompt: |
+        Judge epic {{epic.code}}. Verify intent satisfaction. Output JSON verdict.
+
+  - key: merge_results
+    node_type: merge
+    label: "Collect Results"
+    always_run: true
+    config: {}
+
+  - key: sm_retro
+    node_type: harness
+    label: "Scrum Master Retro"
+    always_run: true
+    config:
+      model: sonnet
+      effort: high
+      budget_usd: 2.0
+      chrome: false
+      heartbeat_timeout_secs: 180
+      system_prompt: |
+        You are the Scrum Master observer for epic {{epic.code}}.
+        Analyze: what went well, what caused friction, patterns to codify.
+        Update .claude/rules/ if patterns emerged.
+        Update .claude/skills/ if workflows should be codified.
+        Identify discovered backlog items.
+      prompt: |
+        Sprint {{sprint.number}} retro for {{epic.code}}.
+        Ceremony results: {{ceremony_results}}
+        Supervisor decisions: {{supervisor_decisions}}
+        Output structured retro with action items.
+
+  - key: output
+    node_type: output
+    label: "Sprint Result"
+    config: {}
+
+edges:
+  - source: source
+    target: research
+  - source: research
+    target: gate_research
+  - source: gate_research
+    target: groom
+    handle: pass
+  - source: gate_research
+    target: merge_results
+    handle: fail
+  - source: groom
+    target: gate_groom
+  - source: gate_groom
+    target: execute
+    handle: pass
+  - source: gate_groom
+    target: merge_results
+    handle: fail
+  - source: execute
+    target: gate_execute
+  - source: gate_execute
+    target: judge
+    handle: pass
+  - source: gate_execute
+    target: merge_results
+    handle: fail
+  - source: judge
+    target: merge_results
+  - source: merge_results
+    target: sm_retro
+  - source: sm_retro
+    target: output
