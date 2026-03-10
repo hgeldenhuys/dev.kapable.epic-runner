@@ -1,0 +1,16 @@
+# Epic Runner project configuration
+# Copy to .epic-runner/config.toml and fill in values.
+
+[api]
+# Kapable API URL (default: https://api.kapable.dev)
+# url = "https://api.kapable.dev"
+
+# Admin API key for Data API access
+# key = "sk_admin_..."
+
+[project]
+# Kapable project ID (set by `epic-runner init`)
+# id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Ceremony flow ID override (optional — uses embedded default if omitted)
+# ceremony_flow_id = "custom-flow-v1"
