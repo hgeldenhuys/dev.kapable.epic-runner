@@ -1,4 +1,19 @@
+use crate::api_client::{ApiClient, DataWrapper};
 use crate::types::{Impediment, ImpedimentStatus};
+
+/// Check for blocking impediments via API.
+pub async fn check_blocking_impediments(
+    client: &ApiClient,
+    project_id: &str,
+    epic_code: &str,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    let resp: DataWrapper<Vec<serde_json::Value>> = client
+        .get(&format!(
+            "/v1/data/{project_id}/impediments?blocking_epic={epic_code}&status=open"
+        ))
+        .await?;
+    Ok(resp.data)
+}
 
 /// Check if an epic has unresolved impediments.
 pub fn has_blocking_impediments(impediments: &[Impediment], epic_code: &str) -> bool {

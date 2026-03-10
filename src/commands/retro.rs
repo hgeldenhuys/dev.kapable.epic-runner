@@ -1,19 +1,83 @@
 use clap::Args;
 
 use super::CliConfig;
-use crate::api_client::ApiClient;
+use crate::api_client::{ApiClient, DataWrapper};
+use crate::executor::{self, ExecutorConfig};
 
 #[derive(Args)]
 pub struct RetroArgs {
     /// Sprint ID to retrospect
     pub sprint_id: String,
+
+    /// Model to use
+    #[arg(long, default_value = "sonnet")]
+    pub model: String,
 }
 
 pub async fn run(
-    _args: RetroArgs,
-    _client: &ApiClient,
+    args: RetroArgs,
+    client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("TODO: standalone retrospective");
+    let project_id = crate::config::resolve_project_id()?;
+
+    // Load sprint
+    let sprint: DataWrapper<serde_json::Value> = client
+        .get(&format!("/v1/data/{project_id}/sprints/{}", args.sprint_id))
+        .await?;
+
+    let ceremony_log = sprint.data["ceremony_log"]
+        .as_array()
+        .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+        .unwrap_or_else(|| "No ceremony log".to_string());
+
+    let epic_id = sprint.data["epic_id"].as_str().unwrap_or("?");
+    let sprint_number = sprint.data["number"].as_i64().unwrap_or(0);
+
+    let config = ExecutorConfig {
+        model: args.model,
+        effort: "high".to_string(),
+        worktree_name: String::new(),
+        session_id: uuid::Uuid::new_v4(),
+        repo_path: ".".to_string(),
+        add_dirs: vec![],
+        system_prompt: Some(format!(
+            "You are the Scrum Master observer. Analyze sprint {} of epic {}.",
+            sprint_number, epic_id
+        )),
+        prompt: format!(
+            "Sprint {} retro.\n\nCeremony log:\n{}\n\nProvide structured retro:\n1. What went well\n2. Friction points\n3. Action items\n4. Discovered backlog items\n\nOutput as JSON matching RetroOutput schema.",
+            sprint_number, ceremony_log
+        ),
+        chrome: false,
+        max_budget_usd: Some(2.0),
+        allowed_tools: Some(vec![
+            "Read".to_string(),
+            "Glob".to_string(),
+            "Grep".to_string(),
+        ]),
+        resume_session: false,
+        agent: None,
+        heartbeat_timeout_secs: 180,
+    };
+
+    eprintln!("Running retrospective for sprint {}...", args.sprint_id);
+    let result = executor::execute(config, |e| {
+        eprintln!("[retro/{}] {}", e.event_type_str(), e.summary);
+    })
+    .await?;
+
+    if let Some(text) = &result.result_text {
+        // Try to parse as structured retro
+        if let Some(retro) = crate::scrum_master::parse_retro(Some(text)) {
+            println!("{}", serde_json::to_string_pretty(&retro)?);
+        } else {
+            println!("{text}");
+        }
+    }
+    if let Some(cost) = result.cost_usd {
+        eprintln!("\nRetro cost: ${cost:.2}");
+    }
+
     Ok(())
 }
