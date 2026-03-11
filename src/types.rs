@@ -229,6 +229,8 @@ pub enum CeremonyStatus {
 pub struct SprintEvent {
     pub sprint_id: Uuid,
     pub event_type: SprintEventType,
+    pub node_id: Option<String>,
+    pub node_label: Option<String>,
     pub summary: String,
     pub detail: Option<serde_json::Value>,
     pub timestamp: DateTime<Utc>,

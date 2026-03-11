@@ -19,6 +19,8 @@ fn build_command_includes_all_flags() {
         resume_session: false,
         agent: None,
         heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -57,6 +59,8 @@ fn build_command_resume_uses_resume_flag() {
         resume_session: true,
         agent: None,
         heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -87,6 +91,8 @@ fn build_command_with_agent() {
         resume_session: false,
         agent: Some("rubber-duck".into()),
         heartbeat_timeout_secs: 120,
+        node_id: None,
+        node_label: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -118,6 +124,8 @@ fn build_command_brief_flag() {
         resume_session: false,
         agent: None,
         heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd

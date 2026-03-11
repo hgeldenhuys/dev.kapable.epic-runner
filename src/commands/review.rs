@@ -62,6 +62,8 @@ pub async fn run(
         agent: None,
         heartbeat_timeout_secs: 300,
         brief: false,
+        node_id: None,
+        node_label: None,
     };
 
     eprintln!("Running business review for epic {}...", args.epic_code);

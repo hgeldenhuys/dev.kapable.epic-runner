@@ -180,6 +180,8 @@ pub async fn execute_flow(
                     sink.emit(SprintEvent {
                         sprint_id: ctx.sprint.session_id,
                         event_type: SprintEventType::NodeStarted,
+                        node_id: Some(node.key.clone()),
+                        node_label: Some(node.label.clone()),
                         summary: format!("{} ({})", node.label, node.key),
                         detail: Some(serde_json::json!({
                             "node_key": node.key,
@@ -196,6 +198,8 @@ pub async fn execute_flow(
                     sink.emit(SprintEvent {
                         sprint_id: ctx.sprint.session_id,
                         event_type: SprintEventType::NodeCompleted,
+                        node_id: Some(node.key.clone()),
+                        node_label: Some(node.label.clone()),
                         summary: format!("{} → {:?}", node.label, result.status),
                         detail: Some(serde_json::json!({
                             "node_key": node.key,
@@ -490,6 +494,8 @@ fn build_executor_config(
         resume_session: false,
         agent: c.agent.clone(),
         heartbeat_timeout_secs: c.heartbeat_timeout_secs.unwrap_or(300),
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
     }
 }
 

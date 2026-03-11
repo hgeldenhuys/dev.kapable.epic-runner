@@ -25,6 +25,9 @@ pub struct ExecutorConfig {
     pub heartbeat_timeout_secs: u64,
     /// Enable --brief mode (activates SendUserMessage tool for structured status updates)
     pub brief: bool,
+    /// Node identity for ceremony event attribution
+    pub node_id: Option<String>,
+    pub node_label: Option<String>,
 }
 
 pub struct ExecutorResult {
@@ -123,6 +126,8 @@ pub async fn execute(
                                         } else {
                                             SprintEventType::Started
                                         },
+                                        node_id: config.node_id.clone(),
+                                        node_label: config.node_label.clone(),
                                         summary: format!("System: {subtype}"),
                                         detail: None,
                                         timestamp: chrono::Utc::now(),
@@ -139,6 +144,8 @@ pub async fn execute(
                                             let se = SprintEvent {
                                                 sprint_id: config.session_id,
                                                 event_type: SprintEventType::AgentMessage,
+                                                node_id: config.node_id.clone(),
+                                                node_label: config.node_label.clone(),
                                                 summary: msg,
                                                 detail: None,
                                                 timestamp: chrono::Utc::now(),
@@ -151,6 +158,8 @@ pub async fn execute(
                                             let se = SprintEvent {
                                                 sprint_id: config.session_id,
                                                 event_type: SprintEventType::CeremonyStarted,
+                                                node_id: config.node_id.clone(),
+                                                node_label: config.node_label.clone(),
                                                 summary: format!("Tool: {name}"),
                                                 detail: None,
                                                 timestamp: chrono::Utc::now(),

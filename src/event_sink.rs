@@ -25,6 +25,8 @@ impl EventSink {
                 let payload = json!({
                     "sprint_id": event.sprint_id.to_string(),
                     "event_type": event.event_type_str(),
+                    "node_id": event.node_id,
+                    "node_label": event.node_label,
                     "summary": event.summary,
                     "detail": event.detail,
                     "timestamp": event.timestamp.to_rfc3339(),

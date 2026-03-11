@@ -100,6 +100,8 @@ pub async fn run(
     sink.emit(SprintEvent {
         sprint_id: sprint.session_id,
         event_type: SprintEventType::Started,
+        node_id: None,
+        node_label: None,
         summary: format!("Sprint {} started for epic {}", sprint.number, epic.code),
         detail: Some(json!({
             "flow": flow.name,
@@ -132,6 +134,8 @@ pub async fn run(
             sink.emit(SprintEvent {
                 sprint_id: sprint.session_id,
                 event_type: SprintEventType::Failed,
+                node_id: None,
+                node_label: None,
                 summary: format!("Sprint {} crashed: {}", sprint.number, e),
                 detail: None,
                 timestamp: chrono::Utc::now(),
@@ -176,6 +180,8 @@ pub async fn run(
         } else {
             SprintEventType::Failed
         },
+        node_id: None,
+        node_label: None,
         summary: format!("Sprint {} finished: {}", sprint.number, final_status),
         detail: Some(json!({
             "intent_satisfied": intent_satisfied,
