@@ -1,5 +1,6 @@
 pub mod backlog;
 pub mod epic;
+pub mod flow_validate;
 pub mod impediment;
 pub mod init;
 pub mod orchestrate;
@@ -41,6 +42,9 @@ pub enum Commands {
     Retro(retro::RetroArgs),
     /// Manage impediments (cross-epic blockers)
     Impediment(impediment::ImpedimentArgs),
+    /// Validate a ceremony flow YAML file
+    #[command(name = "flow-validate")]
+    FlowValidate(flow_validate::FlowValidateArgs),
     /// Show dashboard status
     Status(status::StatusArgs),
 }
@@ -61,6 +65,7 @@ pub async fn run(
         Commands::Review(args) => review::run(args, client, cli).await,
         Commands::Retro(args) => retro::run(args, client, cli).await,
         Commands::Impediment(args) => impediment::run(args, client, cli).await,
+        Commands::FlowValidate(args) => Ok(flow_validate::run(args)?),
         Commands::Status(args) => status::run(args, client, cli).await,
     }
 }
