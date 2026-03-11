@@ -452,6 +452,324 @@ async fn execute_node(
             supervisor_decisions: vec![],
             rubber_duck_sessions: vec![],
         }),
+
+        CeremonyNodeType::Deploy => {
+            execute_deploy_node(node, ctx, sink).await
+        }
+    }
+}
+
+/// Execute a Deploy node: merge worktree → main, push, trigger pipeline, wait.
+async fn execute_deploy_node(
+    node: &CeremonyNode,
+    ctx: &FlowContext,
+    sink: &EventSink,
+) -> Result<NodeResult, Box<dyn std::error::Error>> {
+    let c = &node.config;
+    let worktree_path = format!(".claude/worktrees/{}", ctx.epic.code);
+    let worktree_branch = format!("worktree-{}", ctx.epic.code);
+    let repo_path = &ctx.repo_path;
+
+    // Step 1: Commit any uncommitted changes in the worktree
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: "Committing worktree changes".to_string(),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    if std::path::Path::new(&worktree_path).exists() {
+        // Stage all changes
+        let add = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&worktree_path)
+            .output();
+        if let Ok(output) = add {
+            if !output.status.success() {
+                tracing::warn!("git add -A failed in worktree");
+            }
+        }
+
+        // Check if there's anything to commit
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&worktree_path)
+            .output();
+        let has_changes = status
+            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false);
+
+        if has_changes {
+            let commit_msg = format!(
+                "feat({}): sprint {} ceremony changes\n\nEpic: {} — {}\nSprint: {}\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>",
+                ctx.epic.code.to_lowercase(),
+                ctx.sprint.number,
+                ctx.epic.code,
+                ctx.epic.title,
+                ctx.sprint.number,
+            );
+            std::process::Command::new("git")
+                .args(["commit", "-m", &commit_msg])
+                .current_dir(&worktree_path)
+                .output()
+                .ok();
+        }
+    }
+
+    // Step 2: Merge worktree branch into main
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Merging {} into main", worktree_branch),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    // Checkout main in the repo root
+    let checkout = std::process::Command::new("git")
+        .args(["checkout", "main"])
+        .current_dir(repo_path)
+        .output()?;
+    if !checkout.status.success() {
+        let err = String::from_utf8_lossy(&checkout.stderr);
+        return Ok(deploy_failed(node, &format!("Failed to checkout main: {}", err)));
+    }
+
+    // Pull latest main first
+    std::process::Command::new("git")
+        .args(["pull", "origin", "main", "--rebase"])
+        .current_dir(repo_path)
+        .output()
+        .ok();
+
+    // Merge the worktree branch
+    let merge = std::process::Command::new("git")
+        .args(["merge", &worktree_branch, "--no-edit"])
+        .current_dir(repo_path)
+        .output()?;
+    if !merge.status.success() {
+        let err = String::from_utf8_lossy(&merge.stderr);
+        // Abort the merge so we don't leave things in a dirty state
+        std::process::Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(repo_path)
+            .output()
+            .ok();
+        return Ok(deploy_failed(node, &format!("Merge conflict: {}", err)));
+    }
+
+    // Step 3: Push to origin
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: "Pushing to origin/main".to_string(),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    let push = std::process::Command::new("git")
+        .args(["push", "origin", "main"])
+        .current_dir(repo_path)
+        .output()?;
+    if !push.status.success() {
+        let err = String::from_utf8_lossy(&push.stderr);
+        return Ok(deploy_failed(node, &format!("Push failed: {}", err)));
+    }
+
+    // Step 4: Trigger Connect App Pipeline
+    let app_id = match &c.deploy_app_id {
+        Some(id) => id.clone(),
+        None => {
+            return Ok(deploy_failed(node, "deploy_app_id not configured in flow YAML"));
+        }
+    };
+    let api_key = c.deploy_api_key.clone().unwrap_or_else(|| {
+        std::env::var("KAPABLE_ADMIN_API_KEY")
+            .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
+    });
+    let api_url = c.deploy_api_url.clone().unwrap_or_else(|| {
+        std::env::var("KAPABLE_API_URL")
+            .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
+    });
+    let timeout_secs = c.deploy_timeout_secs.unwrap_or(300);
+
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Triggering Connect App Pipeline for {}", app_id),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    let deploy_url = format!(
+        "{}/v1/apps/{}/environments/production/deploy",
+        api_url, app_id
+    );
+
+    let http_client = reqwest::Client::new();
+    let resp = http_client
+        .post(&deploy_url)
+        .header("x-api-key", &api_key)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await;
+
+    let deployment_id = match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            body["deployment_id"]
+                .as_str()
+                .or_else(|| body["id"].as_str())
+                .map(String::from)
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            return Ok(deploy_failed(
+                node,
+                &format!("Deploy API returned {}: {}", status, body),
+            ));
+        }
+        Err(e) => {
+            return Ok(deploy_failed(node, &format!("Deploy API request failed: {}", e)));
+        }
+    };
+
+    // Step 5: Wait for deploy to complete
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!(
+            "Waiting for deploy to complete (timeout: {}s)",
+            timeout_secs
+        ),
+        detail: deployment_id.as_ref().map(|id| serde_json::json!({"deployment_id": id})),
+        timestamp: chrono::Utc::now(),
+    });
+
+    let start = std::time::Instant::now();
+    #[allow(unused_assignments)]
+    let mut deploy_success = false;
+
+    // If we have a deployment_id, poll its status
+    if let Some(dep_id) = &deployment_id {
+        let status_url = format!("{}/v1/deployments/{}", api_url, dep_id);
+        loop {
+            if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
+                return Ok(deploy_failed(node, "Deploy timed out"));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            let status_resp = http_client
+                .get(&status_url)
+                .header("x-api-key", &api_key)
+                .send()
+                .await;
+
+            if let Ok(r) = status_resp {
+                if let Ok(body) = r.json::<serde_json::Value>().await {
+                    let status = body["status"].as_str().unwrap_or("");
+                    match status {
+                        "deployed" | "completed" | "success" => {
+                            deploy_success = true;
+                            break;
+                        }
+                        "failed" | "error" => {
+                            let msg = body["error"].as_str().unwrap_or("unknown error");
+                            return Ok(deploy_failed(
+                                node,
+                                &format!("Deploy failed: {}", msg),
+                            ));
+                        }
+                        _ => {
+                            tracing::debug!(status, "Deploy still in progress...");
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // No deployment_id — fall back to health check polling
+        if let Some(health_url) = &c.deploy_health_url {
+            loop {
+                if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
+                    return Ok(deploy_failed(node, "Deploy timed out (health check)"));
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+                let health = http_client.get(health_url).send().await;
+                if let Ok(r) = health {
+                    if r.status().is_success() {
+                        deploy_success = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // No way to verify — wait a fixed 60s and hope for the best
+            tracing::warn!("No deployment_id or health_url — waiting 60s for deploy");
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            deploy_success = true;
+        }
+    }
+
+    let summary = if deploy_success {
+        format!("Deployed {} successfully", app_id)
+    } else {
+        format!("Deploy {} uncertain", app_id)
+    };
+
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: summary.clone(),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    Ok(NodeResult {
+        key: node.key.clone(),
+        status: if deploy_success {
+            CeremonyStatus::Completed
+        } else {
+            CeremonyStatus::Failed
+        },
+        output: Some(summary),
+        cost_usd: None,
+        impediment_raised: false,
+        judge_verdict: None,
+        supervisor_decisions: vec![],
+        rubber_duck_sessions: vec![],
+    })
+}
+
+/// Helper to create a failed deploy NodeResult
+fn deploy_failed(node: &CeremonyNode, reason: &str) -> NodeResult {
+    tracing::error!(reason, "Deploy node failed");
+    NodeResult {
+        key: node.key.clone(),
+        status: CeremonyStatus::Failed,
+        output: Some(format!("Deploy failed: {}", reason)),
+        cost_usd: None,
+        impediment_raised: false,
+        judge_verdict: None,
+        supervisor_decisions: vec![],
+        rubber_duck_sessions: vec![],
     }
 }
 

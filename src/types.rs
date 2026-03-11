@@ -255,6 +255,8 @@ pub enum SprintEventType {
     ImpedimentRaised,
     Completed,
     Failed,
+    /// Deploy node progress step (merge, push, trigger, wait, verify)
+    DeployStep,
 }
 
 impl SprintEvent {
@@ -276,6 +278,7 @@ impl SprintEvent {
             SprintEventType::ImpedimentRaised => "impediment",
             SprintEventType::Completed => "completed",
             SprintEventType::Failed => "failed",
+            SprintEventType::DeployStep => "deploy_step",
         }
     }
 }

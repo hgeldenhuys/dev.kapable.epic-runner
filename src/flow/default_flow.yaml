@@ -1,9 +1,10 @@
 name: "Default Sprint Ceremony"
-version: "1.1.0"
+version: "2.0.0"
 description: |
-  Standard ceremony sequence: research → groom → execute (supervised) → judge → SM retro.
-  Gates short-circuit on failure. SM retro always runs.
-  Cost tracking disabled — will be re-enabled with production billing.
+  Full autonomous ceremony: research → groom → execute → deploy → judge (production).
+  Gates short-circuit on failure. Deploy merges worktree → main, pushes, triggers
+  Connect App Pipeline. Judge verifies in production via Chrome.
+  SM retro always runs. Two-phase judgment: code quality + production verification.
 
 nodes:
   - key: source
@@ -123,11 +124,10 @@ nodes:
         {{repo.claude_md}}
 
         Definition of Done — you MUST satisfy before finishing:
-        - cargo clippy --workspace -- -D warnings (zero warnings)
-        - cargo test --workspace (all tests pass)
-        - cargo fmt --all (no formatting changes)
-        - At least one test per new function/handler
+        - bun run build passes (zero errors)
+        - All tests pass
         - Commit after each completed story
+        - Test in Chrome MCP — verify the feature works visually
 
         {{previous_learnings}}
 
@@ -136,6 +136,7 @@ nodes:
         - Run tests after EVERY change, not just at the end
         - If blocked by another epic, say exactly: 'blocked by <EPIC_CODE>'
         - If a test fails, fix it before moving on
+        - Commit your work with descriptive messages
 
         Stories for this sprint:
         {{stories}}
@@ -153,9 +154,23 @@ nodes:
       gate_field: impediment_raised
       gate_expect: "false"
 
+  - key: deploy
+    node_type: deploy
+    label: "Deploy to Production"
+    config:
+      deploy_app_id: "${DEPLOY_APP_ID}"
+      deploy_timeout_secs: 300
+
+  - key: gate_deploy
+    node_type: gate
+    label: "Deploy OK?"
+    config:
+      gate_field: status
+      gate_expect: completed
+
   - key: judge
     node_type: agent
-    label: "LLM Judge (Chrome)"
+    label: "Production Judge (Chrome)"
     config:
       model: sonnet
       effort: high
@@ -163,15 +178,44 @@ nodes:
       chrome: true
       heartbeat_timeout_secs: 300
       system_prompt: |
-        You are an independent judge evaluating whether this epic's intent is satisfied.
+        You are an independent judge evaluating whether this sprint's work is
+        visible and working IN PRODUCTION. You are NOT reviewing code — you are
+        an end user testing the deployed application.
+
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
         Success criteria: {{epic.success_criteria}}
-        Exercise the deployed app in Chrome. Take screenshots. Verify each criterion.
-        Output ONLY valid JSON: {"intent_satisfied": bool, "confidence": 0-1,
-        "criteria_results": [...], "summary": "...", "evidence": [...]}
+
+        INSTRUCTIONS:
+        1. Open the production URL in Chrome
+        2. Navigate to the relevant pages
+        3. Take screenshots as evidence
+        4. Verify each success criterion against the LIVE application
+        5. Test user interactions (clicks, navigation, forms)
+        6. Check for visual regressions (broken layouts, missing data)
+
+        Output ONLY valid JSON:
+        {
+          "intent_satisfied": bool,
+          "confidence": 0.0-1.0,
+          "criteria_results": [
+            {"criterion": "...", "met": bool, "evidence": "what you saw"}
+          ],
+          "summary": "Overall assessment",
+          "evidence": ["screenshot descriptions"],
+          "issues_found": ["Any bugs or regressions spotted"]
+        }
       prompt: |
-        Judge epic {{epic.code}}. Verify intent satisfaction. Output JSON verdict.
+        Judge sprint {{sprint.number}} of epic {{epic.code}}.
+
+        The code has been deployed to production. Open the app in Chrome and
+        verify that the sprint's changes are live and working correctly.
+        Test as an end user — not as a code reviewer.
+
+        Ceremony results so far:
+        {{ceremony_results_json}}
+
+        Output your verdict as JSON.
 
   - key: merge_results
     node_type: merge
@@ -248,9 +292,17 @@ edges:
   - source: execute
     target: gate_execute
   - source: gate_execute
-    target: judge
+    target: deploy
     handle: pass
   - source: gate_execute
+    target: merge_results
+    handle: fail
+  - source: deploy
+    target: gate_deploy
+  - source: gate_deploy
+    target: judge
+    handle: pass
+  - source: gate_deploy
     target: merge_results
     handle: fail
   - source: judge

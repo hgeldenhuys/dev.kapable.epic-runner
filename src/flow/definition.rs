@@ -33,6 +33,8 @@ pub enum CeremonyNodeType {
     Loop,
     Merge,
     Output,
+    /// Merge worktree to main, push, trigger Connect App Pipeline, wait for deploy.
+    Deploy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,6 +56,16 @@ pub struct CeremonyNodeConfig {
     pub loop_max: Option<i32>,
     pub rubber_duck_after: Option<i32>,
     pub agent: Option<String>,
+    /// Deploy node: Connect App Pipeline app ID
+    pub deploy_app_id: Option<String>,
+    /// Deploy node: admin API key for triggering pipeline
+    pub deploy_api_key: Option<String>,
+    /// Deploy node: API base URL (defaults to https://api.kapable.dev)
+    pub deploy_api_url: Option<String>,
+    /// Deploy node: max seconds to wait for deploy (default 300)
+    pub deploy_timeout_secs: Option<u64>,
+    /// Deploy node: production URL to verify health after deploy
+    pub deploy_health_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,10 +135,12 @@ mod tests {
     #[test]
     fn default_flow_parses() {
         let flow = CeremonyFlow::default_flow();
-        assert_eq!(flow.nodes.len(), 11);
-        assert_eq!(flow.edges.len(), 13);
+        assert_eq!(flow.nodes.len(), 13); // +deploy, +gate_deploy vs v1.1
+        assert_eq!(flow.edges.len(), 16); // +3 deploy edges vs v1.1 (13→16)
         assert!(flow.node("research").is_some());
         assert!(flow.node("execute").is_some());
+        assert!(flow.node("deploy").is_some());
+        assert!(flow.node("gate_deploy").is_some());
         assert!(flow.node("judge").is_some());
     }
 

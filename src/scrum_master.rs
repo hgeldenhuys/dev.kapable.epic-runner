@@ -115,7 +115,7 @@ pub fn recommend_flow_patches(
         // Only insert if the node doesn't already exist (idempotent)
         if current_flow.node("research_review").is_none() {
             patches.push(FlowPatch::InsertNode {
-                node: CeremonyNode {
+                node: Box::new(CeremonyNode {
                     key: "research_review".to_string(),
                     node_type: CeremonyNodeType::Harness,
                     label: "Research Quality Review".to_string(),
@@ -143,7 +143,7 @@ pub fn recommend_flow_patches(
                         ..Default::default()
                     },
                     always_run: false,
-                },
+                }),
                 after_node: "research".to_string(),
                 before_node: "gate_research".to_string(),
             });

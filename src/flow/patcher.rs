@@ -11,7 +11,7 @@ pub enum FlowPatch {
     /// Removes the edge `after_node → before_node` and creates:
     ///   `after_node → new_node → before_node`
     InsertNode {
-        node: CeremonyNode,
+        node: Box<CeremonyNode>,
         after_node: String,
         before_node: String,
     },
@@ -314,7 +314,7 @@ edges:
         };
 
         let patches = vec![FlowPatch::InsertNode {
-            node: new_node,
+            node: Box::new(new_node),
             after_node: "research".to_string(),
             before_node: "output".to_string(),
         }];
@@ -351,7 +351,7 @@ edges:
 
         // Insert between gate_research (pass) → groom
         let patches = vec![FlowPatch::InsertNode {
-            node: new_node,
+            node: Box::new(new_node),
             after_node: "gate_research".to_string(),
             before_node: "groom".to_string(),
         }];
@@ -434,13 +434,13 @@ edges:
     fn insert_nonexistent_after_node_skipped() {
         let flow = minimal_flow();
         let patches = vec![FlowPatch::InsertNode {
-            node: CeremonyNode {
+            node: Box::new(CeremonyNode {
                 key: "x".to_string(),
                 node_type: CeremonyNodeType::Harness,
                 label: "X".to_string(),
                 config: CeremonyNodeConfig::default(),
                 always_run: false,
-            },
+            }),
             after_node: "nonexistent".to_string(),
             before_node: "output".to_string(),
         }];
@@ -454,13 +454,13 @@ edges:
     fn insert_duplicate_key_skipped() {
         let flow = minimal_flow();
         let patches = vec![FlowPatch::InsertNode {
-            node: CeremonyNode {
+            node: Box::new(CeremonyNode {
                 key: "research".to_string(), // already exists
                 node_type: CeremonyNodeType::Harness,
                 label: "Dup".to_string(),
                 config: CeremonyNodeConfig::default(),
                 always_run: false,
-            },
+            }),
             after_node: "source".to_string(),
             before_node: "research".to_string(),
         }];
@@ -482,7 +482,7 @@ edges:
                 },
             },
             FlowPatch::InsertNode {
-                node: CeremonyNode {
+                node: Box::new(CeremonyNode {
                     key: "review".to_string(),
                     node_type: CeremonyNodeType::Harness,
                     label: "Review".to_string(),
@@ -491,7 +491,7 @@ edges:
                         ..Default::default()
                     },
                     always_run: false,
-                },
+                }),
                 after_node: "research".to_string(),
                 before_node: "output".to_string(),
             },
@@ -519,7 +519,7 @@ edges:
     fn patched_flow_has_no_cycles() {
         let flow = CeremonyFlow::default_flow();
         let patches = vec![FlowPatch::InsertNode {
-            node: CeremonyNode {
+            node: Box::new(CeremonyNode {
                 key: "research_review".to_string(),
                 node_type: CeremonyNodeType::Harness,
                 label: "Research Review".to_string(),
@@ -529,7 +529,7 @@ edges:
                     ..Default::default()
                 },
                 always_run: false,
-            },
+            }),
             after_node: "gate_research".to_string(),
             before_node: "groom".to_string(),
         }];
