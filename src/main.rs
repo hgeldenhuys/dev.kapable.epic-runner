@@ -1,5 +1,6 @@
 use clap::Parser;
 use epic_runner::commands::Commands;
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +28,17 @@ pub struct Cli {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Initialise structured logging. Honour RUST_LOG; fall back to
+    // warn (quiet) or debug (--verbose).
+    let default_level = if cli.verbose { "debug" } else { "warn" };
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_level));
+    fmt::Subscriber::builder()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
     let client = match epic_runner::api_client::ApiClient::from_env_with_overrides(
         cli.url.clone(),
         cli.key.clone(),

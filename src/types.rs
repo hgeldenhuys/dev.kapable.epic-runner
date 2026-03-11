@@ -54,8 +54,16 @@ pub enum StoryStatus {
 
 impl std::fmt::Display for StoryStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self).unwrap();
-        write!(f, "{}", s.as_str().unwrap())
+        let s = match self {
+            StoryStatus::Draft => "draft",
+            StoryStatus::Ready => "ready",
+            StoryStatus::Planned => "planned",
+            StoryStatus::InProgress => "in_progress",
+            StoryStatus::Done => "done",
+            StoryStatus::Deployed => "deployed",
+            StoryStatus::Blocked => "blocked",
+        };
+        write!(f, "{s}")
     }
 }
 
@@ -88,8 +96,13 @@ pub enum EpicStatus {
 
 impl std::fmt::Display for EpicStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self).unwrap();
-        write!(f, "{}", s.as_str().unwrap())
+        let s = match self {
+            EpicStatus::Active => "active",
+            EpicStatus::Blocked => "blocked",
+            EpicStatus::Closed => "closed",
+            EpicStatus::Abandoned => "abandoned",
+        };
+        write!(f, "{s}")
     }
 }
 
@@ -156,8 +169,19 @@ pub enum SprintStatus {
 
 impl std::fmt::Display for SprintStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self).unwrap();
-        write!(f, "{}", s.as_str().unwrap())
+        let s = match self {
+            SprintStatus::Planning => "planning",
+            SprintStatus::Researching => "researching",
+            SprintStatus::Grooming => "grooming",
+            SprintStatus::Executing => "executing",
+            SprintStatus::Reviewing => "reviewing",
+            SprintStatus::Retrospecting => "retrospecting",
+            SprintStatus::Replenishing => "replenishing",
+            SprintStatus::Completed => "completed",
+            SprintStatus::Failed => "failed",
+            SprintStatus::Blocked => "blocked",
+        };
+        write!(f, "{s}")
     }
 }
 

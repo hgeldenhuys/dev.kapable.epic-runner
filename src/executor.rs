@@ -38,9 +38,10 @@ pub struct ExecutorResult {
 pub fn build_command(config: &ExecutorConfig) -> Command {
     let mut cmd = Command::new("claude");
     cmd.arg("--print");
+    cmd.arg("--verbose");
     cmd.arg("--output-format").arg("stream-json");
     cmd.arg("--model").arg(&config.model);
-    cmd.arg("--effort").arg(&config.effort);
+    cmd.arg("--max-turns").arg("50");
     cmd.arg("--dangerously-skip-permissions");
 
     if config.resume_session {
@@ -143,8 +144,10 @@ pub async fn execute(
                     Ok(Ok(None)) => break,
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {
-                        eprintln!("[executor] Heartbeat timeout ({}s) — killing stuck process",
-                            config.heartbeat_timeout_secs);
+                        tracing::warn!(
+                            timeout_secs = config.heartbeat_timeout_secs,
+                            "Heartbeat timeout — killing stuck Claude process"
+                        );
                         child.kill().await.ok();
                         return Err(format!(
                             "Heartbeat timeout: no output for {}s", config.heartbeat_timeout_secs
@@ -153,7 +156,7 @@ pub async fn execute(
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("[executor] SIGINT received — killing child process");
+                tracing::warn!("SIGINT received — killing child process");
                 child.kill().await.ok();
                 return Err("Interrupted by SIGINT".into());
             }

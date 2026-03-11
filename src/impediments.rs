@@ -44,15 +44,15 @@ pub fn open_impediments_for_epic<'a>(
 /// Format impediment for display.
 pub fn format_impediment(imp: &Impediment) -> String {
     let blocked_by = imp.blocked_by_epic.as_deref().unwrap_or("external");
+    let status_str = match imp.status {
+        ImpedimentStatus::Open => "open",
+        ImpedimentStatus::Acknowledged => "acknowledged",
+        ImpedimentStatus::Resolved => "resolved",
+        ImpedimentStatus::WontFix => "wont_fix",
+    };
     format!(
         "[{}] {} → blocked by {} ({})",
-        imp.blocking_epic,
-        imp.title,
-        blocked_by,
-        serde_json::to_value(&imp.status)
-            .unwrap()
-            .as_str()
-            .unwrap_or("unknown")
+        imp.blocking_epic, imp.title, blocked_by, status_str
     )
 }
 

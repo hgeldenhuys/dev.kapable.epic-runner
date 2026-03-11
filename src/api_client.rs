@@ -1,4 +1,6 @@
-use reqwest::{Client, StatusCode};
+use std::time::Duration;
+
+use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -26,13 +28,29 @@ pub enum ApiError {
     Server(String),
 }
 
+impl ApiError {
+    /// Returns true if the error is transient and worth retrying.
+    fn is_retryable(&self) -> bool {
+        match self {
+            ApiError::Http(e) => e.is_timeout() || e.is_connect(),
+            ApiError::Server(_) => true, // 5xx
+            _ => false,
+        }
+    }
+}
+
 pub const DEFAULT_API_URL: &str = "https://api.kapable.dev";
+
+/// Maximum number of send attempts (1 initial + 2 retries).
+const MAX_ATTEMPTS: u32 = 3;
+/// Base backoff delay in milliseconds; doubled on each retry.
+const BACKOFF_BASE_MS: u64 = 1_000;
 
 impl ApiClient {
     /// Create a client with explicit URL and key (no config cascade).
     pub fn new(base_url: &str, api_key: &str) -> Self {
         Self {
-            client: Client::new(),
+            client: Self::build_client(),
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
         }
@@ -89,18 +107,27 @@ impl ApiClient {
             .ok_or("No API key (--key, KAPABLE_DATA_KEY, or .epic-runner/config.toml)")?;
 
         Ok(Self {
-            client: Client::new(),
+            client: Self::build_client(),
             base_url,
             api_key,
         })
     }
 
+    /// Build a reqwest Client with a 30-second request timeout.
+    fn build_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("Failed to build HTTP client")
+    }
+
+    // ── Public HTTP methods ────────────────────────────────────────────
+
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
         let resp = self
-            .client
-            .get(format!("{}{}", self.base_url, path))
-            .header("x-api-key", &self.api_key)
-            .send()
+            .send_with_retry(|| self.client.get(&url).header("x-api-key", &key))
             .await?;
         self.handle_response(resp).await
     }
@@ -110,12 +137,19 @@ impl ApiClient {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
+        // Serialise once; clone bytes on each retry attempt.
+        let body_bytes = serde_json::to_vec(body)
+            .map_err(|e| ApiError::Server(format!("JSON serialization failed: {e}")))?;
         let resp = self
-            .client
-            .post(format!("{}{}", self.base_url, path))
-            .header("x-api-key", &self.api_key)
-            .json(body)
-            .send()
+            .send_with_retry(|| {
+                self.client
+                    .post(&url)
+                    .header("x-api-key", &key)
+                    .header("content-type", "application/json")
+                    .body(body_bytes.clone())
+            })
             .await?;
         self.handle_response(resp).await
     }
@@ -125,12 +159,18 @@ impl ApiClient {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
+        let body_bytes = serde_json::to_vec(body)
+            .map_err(|e| ApiError::Server(format!("JSON serialization failed: {e}")))?;
         let resp = self
-            .client
-            .patch(format!("{}{}", self.base_url, path))
-            .header("x-api-key", &self.api_key)
-            .json(body)
-            .send()
+            .send_with_retry(|| {
+                self.client
+                    .patch(&url)
+                    .header("x-api-key", &key)
+                    .header("content-type", "application/json")
+                    .body(body_bytes.clone())
+            })
             .await?;
         self.handle_response(resp).await
     }
@@ -140,40 +180,32 @@ impl ApiClient {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
+        let body_bytes = serde_json::to_vec(body)
+            .map_err(|e| ApiError::Server(format!("JSON serialization failed: {e}")))?;
         let resp = self
-            .client
-            .put(format!("{}{}", self.base_url, path))
-            .header("x-api-key", &self.api_key)
-            .json(body)
-            .send()
+            .send_with_retry(|| {
+                self.client
+                    .put(&url)
+                    .header("x-api-key", &key)
+                    .header("content-type", "application/json")
+                    .body(body_bytes.clone())
+            })
             .await?;
         self.handle_response(resp).await
     }
 
     pub async fn delete(&self, path: &str) -> Result<(), ApiError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
         let resp = self
-            .client
-            .delete(format!("{}{}", self.base_url, path))
-            .header("x-api-key", &self.api_key)
-            .send()
+            .send_with_retry(|| self.client.delete(&url).header("x-api-key", &key))
             .await?;
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            Err(self.status_to_error(status, body))
-        }
-    }
-
-    async fn handle_response<T: DeserializeOwned>(
-        &self,
-        resp: reqwest::Response,
-    ) -> Result<T, ApiError> {
-        let status = resp.status();
-        if status.is_success() {
-            resp.json::<T>().await.map_err(ApiError::Http)
-        } else {
             let body = resp.text().await.unwrap_or_default();
             Err(self.status_to_error(status, body))
         }
@@ -204,6 +236,71 @@ impl ApiClient {
             n => Err(ApiError::Validation(format!(
                 "Ambiguous prefix '{prefix}' matches {n} rows in {table}. Use more characters."
             ))),
+        }
+    }
+
+    // ── Internal helpers ───────────────────────────────────────────────
+
+    /// Send a request built by `build_fn`, retrying on transient failures.
+    ///
+    /// `build_fn` is called once per attempt so that bodies can be re-used
+    /// (reqwest `RequestBuilder` is consumed by `.send()`).
+    async fn send_with_retry(
+        &self,
+        build_fn: impl Fn() -> RequestBuilder,
+    ) -> Result<reqwest::Response, ApiError> {
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            match build_fn().send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    // Retry on 429 (rate-limit) or 5xx transient errors.
+                    if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                        && attempt < MAX_ATTEMPTS
+                    {
+                        let delay_ms = BACKOFF_BASE_MS * (1 << (attempt - 1));
+                        tracing::warn!(
+                            attempt,
+                            status = status.as_u16(),
+                            delay_ms,
+                            "Retryable HTTP response — backing off"
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    let api_err = ApiError::Http(e);
+                    if api_err.is_retryable() && attempt < MAX_ATTEMPTS {
+                        let delay_ms = BACKOFF_BASE_MS * (1 << (attempt - 1));
+                        tracing::warn!(
+                            attempt,
+                            delay_ms,
+                            error = %api_err,
+                            "Transient network error — backing off"
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+                    tracing::error!(attempt, error = %api_err, "HTTP request failed");
+                    return Err(api_err);
+                }
+            }
+        }
+    }
+
+    async fn handle_response<T: DeserializeOwned>(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<T, ApiError> {
+        let status = resp.status();
+        if status.is_success() {
+            resp.json::<T>().await.map_err(ApiError::Http)
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(self.status_to_error(status, body))
         }
     }
 

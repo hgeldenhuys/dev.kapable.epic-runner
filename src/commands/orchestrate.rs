@@ -119,7 +119,7 @@ pub async fn run(
             if let Ok(output) = wt_status {
                 let dirty = String::from_utf8_lossy(&output.stdout);
                 if !dirty.trim().is_empty() {
-                    eprintln!("[orchestrate] WARNING: worktree is dirty, stashing...");
+                    tracing::warn!(path = %worktree_path, "Worktree is dirty — stashing before sprint");
                     std::process::Command::new("git")
                         .args(["stash", "--include-untracked"])
                         .current_dir(&worktree_path)
@@ -181,7 +181,7 @@ pub async fn run(
         }
 
         // SPAWN SPRINT RUNNER AS CHILD PROCESS
-        eprintln!("[orchestrate] Spawning sprint-run process...");
+        tracing::info!(sprint_id, sprint_num, "Spawning sprint-run child process");
         let mut cmd = std::process::Command::new(std::env::current_exe()?);
         cmd.arg("sprint-run").arg(sprint_id);
         cmd.arg("--model").arg(&args.model);
@@ -196,7 +196,7 @@ pub async fn run(
         let exit_status = cmd.status()?;
         let exit_code = exit_status.code().unwrap_or(-1);
 
-        eprintln!("[orchestrate] Sprint process exited with code {exit_code}");
+        tracing::info!(exit_code, "Sprint-run process exited");
 
         match exit_code {
             0 => {
@@ -227,10 +227,7 @@ pub async fn run(
             }
             _ => {
                 // Unexpected exit (crash, context exhaustion, SIGKILL)
-                eprintln!(
-                    "Sprint process died unexpectedly (exit {}). Continuing...",
-                    exit_code
-                );
+                tracing::warn!(exit_code, "Sprint process died unexpectedly — continuing to next sprint");
             }
         }
     }

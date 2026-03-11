@@ -132,9 +132,10 @@ pub async fn supervise(
 
         // Rubber duck threshold
         if stop_hook_count >= sup_config.rubber_duck_after {
-            eprintln!(
-                "[supervisor] Stop hook {}/{} — invoking rubber duck",
-                stop_hook_count, sup_config.max_stop_hooks
+            tracing::warn!(
+                stop_hook_count,
+                max = sup_config.max_stop_hooks,
+                "Stop hook threshold — invoking rubber duck"
             );
             let duck = invoke_rubber_duck(&result).await;
             let insights = duck.as_ref().map(|d| d.insights.join("; "));
@@ -157,9 +158,10 @@ pub async fn supervise(
                 insights.unwrap_or_else(|| "none".to_string())
             );
         } else {
-            eprintln!(
-                "[supervisor] Stop hook {}/{} — resuming",
-                stop_hook_count, sup_config.max_stop_hooks
+            tracing::info!(
+                stop_hook_count,
+                max = sup_config.max_stop_hooks,
+                "Stop hook — resuming"
             );
             let decision = SupervisorDecision {
                 sprint_id: result.session_id,
@@ -242,7 +244,7 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
             timestamp: chrono::Utc::now(),
         }),
         Err(e) => {
-            eprintln!("[rubber-duck] Failed: {e}");
+            tracing::error!(error = %e, "Rubber duck invocation failed");
             None
         }
     }

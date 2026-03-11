@@ -79,7 +79,7 @@ pub async fn execute_flow(
                     rubber_duck_sessions: vec![],
                 }
             } else {
-                eprintln!("[flow] Executing: {} ({})", node.label, node.key);
+                tracing::info!(label = %node.label, key = %node.key, "Executing node");
                 execute_node(node, ctx, &results).await?
             };
 
@@ -164,7 +164,7 @@ async fn execute_node(
         CeremonyNodeType::Harness | CeremonyNodeType::Agent => {
             let config = build_executor_config(node, ctx);
             let result = executor::execute(config, |e| {
-                eprintln!("  [{}/{}] {}", node.key, e.event_type_str(), e.summary);
+                tracing::debug!(key = %node.key, event = e.event_type_str(), summary = %e.summary, "Agent event");
             })
             .await?;
 
@@ -210,12 +210,12 @@ async fn execute_node(
                 .unwrap_or_default();
 
             let passed = upstream_status.contains(expect);
-            eprintln!(
-                "  [gate] {}: {} (expect: {}, got: {})",
-                node.label,
-                if passed { "PASS" } else { "FAIL" },
+            tracing::info!(
+                label = %node.label,
+                result = if passed { "PASS" } else { "FAIL" },
                 expect,
-                upstream_status
+                got = %upstream_status,
+                "Gate evaluated"
             );
 
             Ok(NodeResult {
@@ -243,7 +243,7 @@ async fn execute_node(
             };
 
             let supervised = supervisor::supervise(exec_config, sup_config, |e| {
-                eprintln!("  [execute/{}] {}", e.event_type_str(), e.summary);
+                tracing::debug!(event = e.event_type_str(), summary = %e.summary, "Supervised event");
             })
             .await?;
 
