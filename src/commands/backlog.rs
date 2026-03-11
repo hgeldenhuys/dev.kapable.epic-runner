@@ -61,17 +61,31 @@ pub async fn run(
             description,
             points,
         } => {
-            // Look up product by slug
-            let products: DataWrapper<Vec<serde_json::Value>> =
-                client.get(&format!("/v1/products?slug={product}")).await?;
-            let product_id = products
+            // Look up product by slug (client-side filter since JSONB tables
+            // may not support server-side query param filtering)
+            let all_products: DataWrapper<Vec<serde_json::Value>> =
+                client.get("/v1/products").await?;
+            let product_data = all_products
                 .data
-                .first()
-                .and_then(|p| p["id"].as_str())
+                .iter()
+                .find(|p| p["slug"].as_str() == Some(product.as_str()))
                 .ok_or(format!("Product '{product}' not found"))?;
+            let product_id = product_data["id"].as_str().ok_or("Product has no id")?;
+            let prefix = product_data["story_prefix"].as_str().unwrap_or("S");
+
+            // Count existing stories to determine next sequence number
+            let all_stories: DataWrapper<Vec<serde_json::Value>> =
+                client.get("/v1/stories").await?;
+            let story_count = all_stories
+                .data
+                .iter()
+                .filter(|s| s["product_id"].as_str() == Some(product_id))
+                .count();
+            let code = format!("{}-{:03}", prefix, story_count + 1);
 
             let body = json!({
                 "product_id": product_id,
+                "code": code,
                 "title": title,
                 "epic_code": epic,
                 "description": description,
@@ -82,8 +96,11 @@ pub async fn run(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let id = resp["id"].as_str().unwrap_or("?");
-                eprintln!("Story created: {id}");
+                eprintln!("Story created: {code}");
+                eprintln!("  Title: {title}");
+                if let Some(e) = &epic {
+                    eprintln!("  Epic: {e}");
+                }
             }
         }
         BacklogAction::List {
@@ -119,11 +136,13 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&filtered)?);
             } else {
                 let mut table = Table::new();
-                table.set_header(vec!["ID", "Title", "Epic", "Status", "Pts"]);
+                table.set_header(vec!["Code", "Title", "Epic", "Status", "Pts"]);
                 for row in &filtered {
                     let s: Story = serde_json::from_value((*row).clone())?;
+                    let id_short = s.id.to_string();
+                    let code_display = s.code.as_deref().unwrap_or(&id_short[..8]);
                     table.add_row(vec![
-                        Cell::new(&s.id.to_string()[..8]),
+                        Cell::new(code_display),
                         Cell::new(truncate(&s.title, 40)),
                         Cell::new(s.epic_code.as_deref().unwrap_or("-")),
                         Cell::new(s.status.to_string()),
@@ -135,26 +154,49 @@ pub async fn run(
             }
         }
         BacklogAction::Show { id } => {
-            let full_id = client.resolve_id("stories", &id).await?;
+            let full_id = resolve_story_id(client, &id).await?;
             let resp: serde_json::Value = client.get(&format!("/v1/stories/{full_id}")).await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
         BacklogAction::Transition { id, status } => {
-            let full_id = client.resolve_id("stories", &id).await?;
+            let full_id = resolve_story_id(client, &id).await?;
             let body = json!({ "status": status, "updated_at": chrono::Utc::now().to_rfc3339() });
             let _: serde_json::Value = client
                 .patch(&format!("/v1/stories/{full_id}"), &body)
                 .await?;
-            eprintln!("Story {full_id} → {status}");
+            eprintln!("Story {id} → {status}");
         }
         BacklogAction::Delete { id } => {
-            let full_id = client.resolve_id("stories", &id).await?;
+            let full_id = resolve_story_id(client, &id).await?;
             client.delete(&format!("/v1/stories/{full_id}")).await?;
-            eprintln!("Story {full_id} deleted");
+            eprintln!("Story {id} deleted");
         }
     }
 
     Ok(())
+}
+
+/// Resolve a story identifier — accepts either a story code (e.g. "ER-042")
+/// or a UUID/UUID prefix. Code lookup is tried first, then falls back to UUID resolution.
+async fn resolve_story_id(
+    client: &ApiClient,
+    id_or_code: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // If it looks like a story code (letters-digits), try code lookup first
+    if id_or_code.contains('-') && id_or_code.chars().next().is_some_and(|c| c.is_alphabetic()) {
+        let all: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
+        if let Some(story) = all
+            .data
+            .iter()
+            .find(|s| s["code"].as_str() == Some(id_or_code))
+        {
+            if let Some(id) = story["id"].as_str() {
+                return Ok(id.to_string());
+            }
+        }
+    }
+    // Fall back to UUID prefix resolution
+    Ok(client.resolve_id("stories", id_or_code).await?)
 }
 
 fn truncate(s: &str, max: usize) -> &str {

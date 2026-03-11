@@ -24,6 +24,9 @@ pub enum ProductAction {
         repo_path: String,
         #[arg(long)]
         description: Option<String>,
+        /// Short prefix for story codes (e.g. "ER" → ER-001). Defaults to uppercase slug initials.
+        #[arg(long)]
+        story_prefix: Option<String>,
     },
     /// List all products
     List,
@@ -42,12 +45,16 @@ pub async fn run(
             slug,
             repo_path,
             description,
+            story_prefix,
         } => {
+            // Derive prefix from slug if not provided: "epic-runner" → "ER"
+            let prefix = story_prefix.unwrap_or_else(|| derive_prefix(&slug));
             let body = json!({
                 "name": name,
                 "slug": slug,
                 "repo_path": repo_path,
                 "description": description,
+                "story_prefix": prefix,
             });
             let resp: serde_json::Value = client.post("/v1/products", &body).await?;
             if cli.json {
@@ -55,6 +62,9 @@ pub async fn run(
             } else {
                 let id = resp["id"].as_str().unwrap_or("?");
                 eprintln!("Product created: {id} ({name})");
+                eprintln!(
+                    "  Story prefix: {prefix} (stories will be {prefix}-001, {prefix}-002, ...)"
+                );
             }
         }
         ProductAction::List => {
@@ -83,4 +93,37 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Derive a story prefix from a product slug.
+/// Takes the first letter of each hyphen-separated word, uppercased.
+/// "epic-runner" → "ER", "kapable" → "K", "my-cool-app" → "MCA"
+fn derive_prefix(slug: &str) -> String {
+    let prefix: String = slug
+        .split('-')
+        .filter_map(|word| word.chars().next())
+        .collect::<String>()
+        .to_uppercase();
+    if prefix.is_empty() {
+        "S".to_string() // fallback
+    } else {
+        prefix
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_prefix_from_slug() {
+        assert_eq!(derive_prefix("epic-runner"), "ER");
+        assert_eq!(derive_prefix("kapable"), "K");
+        assert_eq!(derive_prefix("my-cool-app"), "MCA");
+    }
+
+    #[test]
+    fn derive_prefix_empty_fallback() {
+        assert_eq!(derive_prefix(""), "S");
+    }
 }

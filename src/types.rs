@@ -11,6 +11,9 @@ pub struct Product {
     pub slug: String,
     pub repo_path: String,
     pub description: Option<String>,
+    /// Short prefix for story codes, e.g. "ER" → stories become ER-001, ER-002
+    #[serde(default)]
+    pub story_prefix: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -28,6 +31,9 @@ pub struct CreateProduct {
 pub struct Story {
     pub id: Uuid,
     pub product_id: Uuid,
+    /// Human-readable code, e.g. "ER-042" (product-scoped sequential)
+    #[serde(default)]
+    pub code: Option<String>,
     pub title: String,
     pub description: Option<String>,
     pub epic_code: Option<String>,
