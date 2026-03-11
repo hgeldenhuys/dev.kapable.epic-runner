@@ -587,67 +587,45 @@ async fn execute_deploy_node(
     }
 
     // Step 4: Trigger Connect App Pipeline
-    // Resolve deploy settings: YAML node config → project config.toml → env var → default
-    let project_config =
-        crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
-
-    // Resolve deploy_app_id with full cascade
-    let resolve_env_ref = |val: &str| -> Option<String> {
-        if val.starts_with("${") && val.ends_with('}') {
-            let var_name = &val[2..val.len() - 1];
-            std::env::var(var_name).ok()
-        } else if !val.is_empty() {
-            Some(val.to_string())
-        } else {
-            None
-        }
+    let cfg = match resolve_deploy_config(c) {
+        Ok(cfg) => cfg,
+        Err(e) => return Ok(deploy_failed(node, &e)),
     };
+    let app_id = cfg.app_id.as_str();
+    let api_key = cfg.api_key.as_str();
+    let api_url = cfg.api_url.as_str();
+    let timeout_secs = c.deploy_timeout_secs.unwrap_or(300);
 
-    let app_id = c
-        .deploy_app_id
-        .as_deref()
-        .and_then(resolve_env_ref)
-        .or_else(|| {
-            project_config
-                .as_ref()
-                .and_then(|c| c.deploy_app_id().map(String::from))
-        })
-        .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
+    // Step 4a: Acquire platform-level deploy lock (per app_id)
+    let agent_id = ctx.sprint.session_id.to_string();
+    let lock_reason = format!(
+        "deploy→judge→promote for {} sprint {}",
+        ctx.epic.code, ctx.sprint.number
+    );
 
-    let app_id = match app_id {
-        Some(id) => id,
-        None => {
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Acquiring deploy lock for {}", app_id),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    match acquire_deploy_lock(&cfg, &agent_id, Some(&agent_id), &lock_reason).await {
+        Ok(true) => { /* lock acquired */ }
+        Ok(false) => {
             return Ok(deploy_failed(
                 node,
-                "deploy_app_id not configured — set in .epic-runner/config.toml [deploy] app_id, DEPLOY_APP_ID env var, or deploy_app_id in flow YAML",
+                "Deploy lock held by another agent — cannot deploy concurrently. Retry next sprint.",
             ));
         }
-    };
-    let api_key = c
-        .deploy_api_key
-        .clone()
-        .or_else(|| {
-            project_config
-                .as_ref()
-                .and_then(|c| c.deploy_api_key().map(String::from))
-        })
-        .unwrap_or_else(|| {
-            std::env::var("KAPABLE_ADMIN_API_KEY")
-                .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
-        });
-    let api_url = c
-        .deploy_api_url
-        .clone()
-        .or_else(|| {
-            project_config
-                .as_ref()
-                .and_then(|c| c.deploy_api_url().map(String::from))
-        })
-        .unwrap_or_else(|| {
-            std::env::var("KAPABLE_API_URL")
-                .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
-        });
-    let timeout_secs = c.deploy_timeout_secs.unwrap_or(300);
+        Err(e) => {
+            // Lock API not available (pre-migration) — proceed without lock
+            tracing::warn!(error = %e, "Deploy lock unavailable — proceeding without lock");
+        }
+    }
 
     sink.emit(SprintEvent {
         sprint_id: ctx.sprint.session_id,
@@ -675,7 +653,7 @@ async fn execute_deploy_node(
     let http_client = reqwest::Client::new();
     let resp = http_client
         .post(&deploy_url)
-        .header("x-api-key", &api_key)
+        .header("x-api-key", api_key)
         .json(&deploy_body)
         .timeout(std::time::Duration::from_secs(30))
         .send()
@@ -693,12 +671,14 @@ async fn execute_deploy_node(
         Ok(r) => {
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
+            release_deploy_lock(&cfg, &agent_id).await;
             return Ok(deploy_failed(
                 node,
                 &format!("Deploy API returned {}: {}", status, body),
             ));
         }
         Err(e) => {
+            release_deploy_lock(&cfg, &agent_id).await;
             return Ok(deploy_failed(
                 node,
                 &format!("Deploy API request failed: {}", e),
@@ -731,6 +711,7 @@ async fn execute_deploy_node(
         let status_url = format!("{}/v1/pipeline-runs/{}", api_url, run_id);
         loop {
             if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
+                release_deploy_lock(&cfg, &agent_id).await;
                 return Ok(deploy_failed(node, "Deploy timed out"));
             }
 
@@ -738,7 +719,7 @@ async fn execute_deploy_node(
 
             let status_resp = http_client
                 .get(&status_url)
-                .header("x-api-key", &api_key)
+                .header("x-api-key", api_key)
                 .send()
                 .await;
 
@@ -752,6 +733,7 @@ async fn execute_deploy_node(
                         }
                         "failed" | "error" | "cancelled" => {
                             let msg = body["error"].as_str().unwrap_or("unknown error");
+                            release_deploy_lock(&cfg, &agent_id).await;
                             return Ok(deploy_failed(node, &format!("Deploy failed: {}", msg)));
                         }
                         _ => {
@@ -767,6 +749,7 @@ async fn execute_deploy_node(
         if let Some(health_url) = &c.deploy_health_url {
             loop {
                 if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
+                    release_deploy_lock(&cfg, &agent_id).await;
                     return Ok(deploy_failed(node, "Deploy timed out (health check)"));
                 }
 
@@ -833,13 +816,96 @@ async fn execute_deploy_node(
 }
 
 /// Execute a Promote node: call the promote-slot API to shift 100% traffic to standby.
+/// Releases the deploy lock after promotion (or on failure).
 async fn execute_promote_node(
     node: &CeremonyNode,
     ctx: &FlowContext,
     sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
     let c = &node.config;
+    let cfg = match resolve_deploy_config(c) {
+        Ok(cfg) => cfg,
+        Err(e) => return Ok(deploy_failed(node, &e)),
+    };
+    let app_id = cfg.app_id.as_str();
+    let api_key = cfg.api_key.as_str();
+    let api_url = cfg.api_url.as_str();
+    let agent_id = ctx.sprint.session_id.to_string();
 
+    let slot_name = c.deploy_slot.as_deref().unwrap_or("standby");
+
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Promoting slot '{}' to primary (100% traffic)", slot_name),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    let promote_url = format!(
+        "{}/v1/apps/{}/environments/production/slots/{}/promote",
+        api_url, app_id, slot_name
+    );
+
+    let http_client = reqwest::Client::new();
+    let resp = http_client
+        .post(&promote_url)
+        .header("x-api-key", api_key)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await;
+
+    let result = match resp {
+        Ok(r) if r.status().is_success() => {
+            let summary = format!(
+                "Promoted slot '{}' to primary — zero-downtime swap complete",
+                slot_name
+            );
+            sink.emit(SprintEvent {
+                sprint_id: ctx.sprint.session_id,
+                event_type: SprintEventType::DeployStep,
+                node_id: Some(node.key.clone()),
+                node_label: Some(node.label.clone()),
+                summary: summary.clone(),
+                detail: None,
+                timestamp: chrono::Utc::now(),
+            });
+            NodeResult {
+                key: node.key.clone(),
+                status: CeremonyStatus::Completed,
+                output: Some(summary),
+                cost_usd: None,
+                impediment_raised: false,
+                judge_verdict: None,
+                supervisor_decisions: vec![],
+                rubber_duck_sessions: vec![],
+            }
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            deploy_failed(node, &format!("Promote API returned {}: {}", status, body))
+        }
+        Err(e) => deploy_failed(node, &format!("Promote API request failed: {}", e)),
+    };
+
+    // Always release the deploy lock after promote (success or failure)
+    release_deploy_lock(&cfg, &agent_id).await;
+
+    Ok(result)
+}
+
+/// Resolved deploy configuration — shared by Deploy, Promote, and lock helpers.
+struct DeployConfig {
+    app_id: String,
+    api_key: String,
+    api_url: String,
+}
+
+/// Resolve deploy configuration from node config → project config → env vars.
+fn resolve_deploy_config(c: &CeremonyNodeConfig) -> Result<DeployConfig, String> {
     let project_config =
         crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
 
@@ -863,17 +929,8 @@ async fn execute_promote_node(
                 .as_ref()
                 .and_then(|c| c.deploy_app_id().map(String::from))
         })
-        .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
-
-    let app_id = match app_id {
-        Some(id) => id,
-        None => {
-            return Ok(deploy_failed(
-                node,
-                "deploy_app_id not configured for promote",
-            ));
-        }
-    };
+        .or_else(|| std::env::var("DEPLOY_APP_ID").ok())
+        .ok_or_else(|| "deploy_app_id not configured".to_string())?;
 
     let api_key = c
         .deploy_api_key
@@ -887,6 +944,7 @@ async fn execute_promote_node(
             std::env::var("KAPABLE_ADMIN_API_KEY")
                 .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
         });
+
     let api_url = c
         .deploy_api_url
         .clone()
@@ -900,69 +958,82 @@ async fn execute_promote_node(
                 .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
         });
 
-    let slot_name = c.deploy_slot.as_deref().unwrap_or("standby");
+    Ok(DeployConfig {
+        app_id,
+        api_key,
+        api_url,
+    })
+}
 
-    sink.emit(SprintEvent {
-        sprint_id: ctx.sprint.session_id,
-        event_type: SprintEventType::DeployStep,
-        node_id: Some(node.key.clone()),
-        node_label: Some(node.label.clone()),
-        summary: format!("Promoting slot '{}' to primary (100% traffic)", slot_name),
-        detail: None,
-        timestamp: chrono::Utc::now(),
+/// Acquire a platform-level deploy lock for the deploy→judge→promote sequence.
+/// Returns Ok(true) if acquired, Ok(false) if lock is held, Err on network failure.
+async fn acquire_deploy_lock(
+    cfg: &DeployConfig,
+    agent_id: &str,
+    session_id: Option<&str>,
+    reason: &str,
+) -> Result<bool, String> {
+    let url = format!("{}/v1/apps/{}/deploy-lock", cfg.api_url, cfg.app_id);
+
+    let body = serde_json::json!({
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "reason": reason,
+        "ttl_secs": 900,  // 15 min — covers deploy + judge + promote
     });
 
-    let promote_url = format!(
-        "{}/v1/apps/{}/environments/production/slots/{}/promote",
-        api_url, app_id, slot_name
-    );
-
-    let http_client = reqwest::Client::new();
-    let resp = http_client
-        .post(&promote_url)
-        .header("x-api-key", &api_key)
-        .timeout(std::time::Duration::from_secs(30))
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("x-api-key", &cfg.api_key)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
         .send()
-        .await;
+        .await
+        .map_err(|e| format!("Deploy lock request failed: {}", e))?;
 
-    match resp {
+    if resp.status().is_success() {
+        tracing::info!(app_id = %cfg.app_id, agent_id, "Deploy lock acquired");
+        Ok(true)
+    } else if resp.status().as_u16() == 409 {
+        let body = resp.text().await.unwrap_or_default();
+        tracing::warn!(app_id = %cfg.app_id, agent_id, body, "Deploy lock conflict");
+        Ok(false)
+    } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("Deploy lock API returned {}: {}", status, body))
+    }
+}
+
+/// Release a platform-level deploy lock. Best-effort — log but don't fail on errors.
+async fn release_deploy_lock(cfg: &DeployConfig, agent_id: &str) {
+    let url = format!("{}/v1/apps/{}/deploy-lock", cfg.api_url, cfg.app_id);
+
+    let body = serde_json::json!({
+        "agent_id": agent_id,
+    });
+
+    let client = reqwest::Client::new();
+    match client
+        .delete(&url)
+        .header("x-api-key", &cfg.api_key)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
         Ok(r) if r.status().is_success() => {
-            let summary = format!(
-                "Promoted slot '{}' to primary — zero-downtime swap complete",
-                slot_name
-            );
-            sink.emit(SprintEvent {
-                sprint_id: ctx.sprint.session_id,
-                event_type: SprintEventType::DeployStep,
-                node_id: Some(node.key.clone()),
-                node_label: Some(node.label.clone()),
-                summary: summary.clone(),
-                detail: None,
-                timestamp: chrono::Utc::now(),
-            });
-            Ok(NodeResult {
-                key: node.key.clone(),
-                status: CeremonyStatus::Completed,
-                output: Some(summary),
-                cost_usd: None,
-                impediment_raised: false,
-                judge_verdict: None,
-                supervisor_decisions: vec![],
-                rubber_duck_sessions: vec![],
-            })
+            tracing::info!(app_id = %cfg.app_id, agent_id, "Deploy lock released");
         }
         Ok(r) => {
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
-            Ok(deploy_failed(
-                node,
-                &format!("Promote API returned {}: {}", status, body),
-            ))
+            tracing::warn!(app_id = %cfg.app_id, status = %status, body, "Deploy lock release non-200");
         }
-        Err(e) => Ok(deploy_failed(
-            node,
-            &format!("Promote API request failed: {}", e),
-        )),
+        Err(e) => {
+            tracing::warn!(app_id = %cfg.app_id, error = %e, "Deploy lock release failed (will TTL-expire)");
+        }
     }
 }
 
