@@ -425,20 +425,38 @@ fn build_executor_config(
 /// - {{input}} — concatenated outputs of direct upstream nodes (platform Flow editor compatible)
 /// - {{epic.code}}, {{epic.title}}, {{epic.intent}}, {{epic.success_criteria}}
 /// - {{sprint.number}}, {{stories}}
-/// - {{ceremony_results}} — summary of all node results so far
+/// - {{ceremony_results}} — human-readable CSV summary of all node results so far
+/// - {{ceremony_results_json}} — structured JSON array of all node results so far
 /// - {{supervisor_decisions}} — summary of all supervisor decisions so far
+/// - {{repo.claude_md}} — contents of CLAUDE.md from the repo root (project conventions)
 fn interpolate(
     template: &str,
     ctx: &FlowContext,
     input: &str,
     all_results: &HashMap<String, NodeResult>,
 ) -> String {
-    // Build ceremony_results summary for retro node
+    // Build ceremony_results — human-readable CSV
     let ceremony_results: String = all_results
         .values()
         .map(|r| format!("{}: {:?}", r.key, r.status))
         .collect::<Vec<_>>()
         .join(", ");
+
+    // Build ceremony_results_json — structured array for programmatic parsing
+    let ceremony_results_json: String = serde_json::to_string_pretty(
+        &all_results
+            .values()
+            .map(|r| {
+                serde_json::json!({
+                    "key": r.key,
+                    "status": format!("{:?}", r.status),
+                    "cost_usd": r.cost_usd,
+                    "impediment_raised": r.impediment_raised,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
 
     let supervisor_decisions: String = all_results
         .values()
@@ -447,10 +465,20 @@ fn interpolate(
         .collect::<Vec<_>>()
         .join("; ");
 
+    // Load CLAUDE.md from repo root (best-effort — empty string if missing)
+    let claude_md = if template.contains("{{repo.claude_md}}") {
+        let claude_md_path = std::path::Path::new(&ctx.repo_path).join("CLAUDE.md");
+        std::fs::read_to_string(&claude_md_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     template
         .replace("{{input}}", input)
         .replace("{{ceremony_results}}", &ceremony_results)
+        .replace("{{ceremony_results_json}}", &ceremony_results_json)
         .replace("{{supervisor_decisions}}", &supervisor_decisions)
+        .replace("{{repo.claude_md}}", &claude_md)
         .replace("{{epic.code}}", &ctx.epic.code)
         .replace("{{epic.title}}", &ctx.epic.title)
         .replace("{{epic.intent}}", &ctx.epic.intent)

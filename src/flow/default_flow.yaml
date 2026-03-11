@@ -31,10 +31,20 @@ nodes:
         You are a research agent. Read-only. Do NOT edit files.
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
-        Find: relevant files, existing patterns, dependencies, blockers.
+
+        Output ONLY valid JSON matching this schema:
+        {
+          "files": ["path/to/relevant/file.rs:42"],
+          "patterns": ["Pattern description with file references"],
+          "dependencies": ["External dep or internal module dependency"],
+          "blockers": ["Potential blocker description"],
+          "conventions": ["Key convention from CLAUDE.md that applies"]
+        }
       prompt: |
         Research the codebase for epic {{epic.code}}. Find all relevant files,
-        existing patterns, and potential blockers. Output a structured research brief.
+        existing patterns, dependencies, and potential blockers.
+        Project conventions (from CLAUDE.md):
+        {{repo.claude_md}}
 
   - key: gate_research
     node_type: gate
@@ -53,13 +63,36 @@ nodes:
       heartbeat_timeout_secs: 180
       system_prompt: |
         You are a scrum master grooming stories for epic {{epic.code}}.
-        Apply Definition of Ready. Add acceptance criteria. Estimate points.
+        Apply Definition of Ready:
+        - Feature parity checked against existing code
+        - Auth model specified (if applicable)
+        - Acceptance criteria describe real user scenarios
+        - Dependencies identified
+        - Test plan defined
+        - Scope bounded (completable in one session)
+
+        Output ONLY valid JSON array matching this schema:
+        [
+          {
+            "id": "story-uuid",
+            "title": "Story title",
+            "acceptance_criteria": ["AC 1: Given X, When Y, Then Z"],
+            "file_paths": ["src/path/to/file.rs:42"],
+            "points": 3,
+            "dependencies": ["other-story-id or blocker"],
+            "test_plan": "How to verify this story"
+          }
+        ]
       prompt: |
-        Groom the backlog stories tagged with epic {{epic.code}}. For each story:
-        1. Add specific acceptance criteria
-        2. Add file paths and line numbers
+        Groom the backlog stories for epic {{epic.code}}:
+        {{input}}
+
+        Research findings above. For each story:
+        1. Add specific, testable acceptance criteria (Given/When/Then)
+        2. Add file paths and line numbers from the research
         3. Estimate story points (1/2/3/5/8)
-        4. Apply DoD checklist
+        4. List dependencies between stories
+        5. Define test plan (what command verifies it works)
         Output groomed stories as JSON array.
 
   - key: gate_groom
@@ -82,16 +115,31 @@ nodes:
       system_prompt: |
         You are a senior developer executing sprint {{sprint.number}} of epic {{epic.code}}.
         Intent: {{epic.intent}}
-        Stories: {{stories}}
+
+        Project conventions:
+        {{repo.claude_md}}
+
+        Definition of Done — you MUST satisfy before finishing:
+        - cargo clippy --workspace -- -D warnings (zero warnings)
+        - cargo test --workspace (all tests pass)
+        - cargo fmt --all (no formatting changes)
+        - At least one test per new function/handler
+        - Commit after each completed story
+
         Rules:
-        - Commit after each story
-        - Run tests after each change
         - Execute autonomously — no confirmations
-        - If blocked, say 'blocked by <EPIC_CODE>'
-        - Deploy before finishing
+        - Run tests after EVERY change, not just at the end
+        - If blocked by another epic, say exactly: 'blocked by <EPIC_CODE>'
+        - If a test fails, fix it before moving on
+
+        Stories for this sprint:
+        {{stories}}
       prompt: |
         Execute all stories for sprint {{sprint.number}} of epic {{epic.code}}.
-        Build, test, commit, deploy. Report completion status.
+        Groomed story details from previous ceremony:
+        {{input}}
+
+        For each story: implement, test, commit. Report what you did per story.
 
   - key: gate_execute
     node_type: gate
@@ -136,15 +184,35 @@ nodes:
       heartbeat_timeout_secs: 180
       system_prompt: |
         You are the Scrum Master observer for epic {{epic.code}}.
-        Analyze: what went well, what caused friction, patterns to codify.
-        Update .claude/rules/ if patterns emerged.
-        Update .claude/skills/ if workflows should be codified.
-        Identify discovered backlog items.
+
+        Output ONLY valid JSON matching this schema:
+        {
+          "went_well": ["What worked and should be repeated"],
+          "friction_points": ["What caused delays or frustration"],
+          "action_items": ["Concrete improvement to make"],
+          "discovered_work": ["New backlog items found during execution"],
+          "observations": [
+            {
+              "category": "process|technical|quality|velocity",
+              "description": "What was observed",
+              "severity": "low|medium|high",
+              "action_item": "What to do about it"
+            }
+          ],
+          "patterns_to_codify": ["Convention that should become a rule"],
+          "sprint_health": "healthy|strained|failing"
+        }
       prompt: |
         Sprint {{sprint.number}} retro for {{epic.code}}.
-        Ceremony results: {{ceremony_results}}
+
+        Ceremony results (structured):
+        {{ceremony_results_json}}
+
         Supervisor decisions: {{supervisor_decisions}}
-        Output structured retro with action items.
+
+        Analyze: what went well, what caused friction, patterns to codify,
+        discovered work items. Be specific — cite node names and costs.
+        Output structured JSON retro.
 
   - key: output
     node_type: output
