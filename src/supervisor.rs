@@ -179,20 +179,48 @@ pub async fn supervise(
     }
 }
 
-/// Extract blocker epic code from output text.
+/// Extract blocker epic codes from output text.
+/// Recognizes multiple patterns LLMs commonly use:
+///   - "blocked by AUTH-001"
+///   - "depends on DATA-003"
+///   - "waiting for INFRA-002"
+///
+/// Returns the first match (primary blocker for impediment tracking).
 fn extract_blocker(text: &str) -> Option<String> {
+    let blockers = extract_all_blockers(text);
+    blockers.into_iter().next()
+}
+
+/// Extract ALL blocker epic codes from output text.
+/// Matches patterns: "blocked by X", "depends on X", "waiting for X"
+/// where X looks like an epic code (uppercase letters + digits + hyphens).
+fn extract_all_blockers(text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
-    if let Some(pos) = lower.find("blocked by ") {
-        let rest = &text[pos + 11..];
-        let code: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if !code.is_empty() {
-            return Some(code);
+    let patterns = ["blocked by ", "depends on ", "waiting for "];
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for pattern in &patterns {
+        let mut search_from = 0;
+        while let Some(pos) = lower[search_from..].find(pattern) {
+            let abs_pos = search_from + pos + pattern.len();
+            let rest = &text[abs_pos..];
+            let code: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            // Only accept codes that look like epic codes (contain a hyphen, start with letters)
+            if !code.is_empty()
+                && code.contains('-')
+                && code.chars().next().is_some_and(|c| c.is_alphabetic())
+                && seen.insert(code.clone())
+            {
+                found.push(code);
+            }
+            search_from = abs_pos;
         }
     }
-    None
+    found
 }
 
 /// Invoke rubber duck agent to diagnose stuck state.
@@ -273,5 +301,44 @@ mod tests {
             extract_blocker("Blocked By DATA-003"),
             Some("DATA-003".to_string())
         );
+    }
+
+    #[test]
+    fn extract_blocker_depends_on_pattern() {
+        assert_eq!(
+            extract_blocker("This depends on INFRA-002 being deployed first"),
+            Some("INFRA-002".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_blocker_waiting_for_pattern() {
+        assert_eq!(
+            extract_blocker("I'm waiting for SEC-005 to land"),
+            Some("SEC-005".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_blocker_ignores_non_epic_codes() {
+        // "blocked by bugs" shouldn't match — no hyphen, doesn't look like an epic code
+        assert_eq!(extract_blocker("I'm blocked by bugs in the code"), None);
+    }
+
+    #[test]
+    fn extract_all_blockers_finds_multiple() {
+        let text = "blocked by AUTH-001, also depends on DATA-003 and waiting for SEC-005";
+        let blockers = extract_all_blockers(text);
+        assert_eq!(blockers.len(), 3);
+        assert!(blockers.contains(&"AUTH-001".to_string()));
+        assert!(blockers.contains(&"DATA-003".to_string()));
+        assert!(blockers.contains(&"SEC-005".to_string()));
+    }
+
+    #[test]
+    fn extract_all_blockers_deduplicates() {
+        let text = "blocked by AUTH-001 and also blocked by AUTH-001 again";
+        let blockers = extract_all_blockers(text);
+        assert_eq!(blockers.len(), 1);
     }
 }
