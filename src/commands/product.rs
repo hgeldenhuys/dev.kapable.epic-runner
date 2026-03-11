@@ -49,11 +49,11 @@ pub async fn run(
                 "repo_path": repo_path,
                 "description": description,
             });
-            let resp: DataWrapper<serde_json::Value> = client.post("/v1/products", &body).await?;
+            let resp: serde_json::Value = client.post("/v1/products", &body).await?;
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&resp.data)?);
+                println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let id = resp.data["id"].as_str().unwrap_or("?");
+                let id = resp["id"].as_str().unwrap_or("?");
                 eprintln!("Product created: {id} ({name})");
             }
         }
@@ -77,9 +77,8 @@ pub async fn run(
             }
         }
         ProductAction::Show { id } => {
-            let resp: DataWrapper<serde_json::Value> =
-                client.get(&format!("/v1/products/{id}")).await?;
-            println!("{}", serde_json::to_string_pretty(&resp.data)?);
+            let resp: serde_json::Value = client.get(&format!("/v1/products/{id}")).await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
         }
     }
 

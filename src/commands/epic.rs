@@ -89,10 +89,10 @@ pub async fn run(
                 "status": "active",
                 "worktree_name": worktree_name,
             });
-            let resp: DataWrapper<serde_json::Value> = client.post("/v1/epics", &body).await?;
+            let resp: serde_json::Value = client.post("/v1/epics", &body).await?;
 
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&resp.data)?);
+                println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
                 eprintln!("Epic created: {code}");
                 eprintln!("  Title: {title}");
@@ -150,8 +150,7 @@ pub async fn run(
                 .ok_or(format!("Epic '{code}' not found"))?;
             let id = epic["id"].as_str().ok_or("Epic has no id")?;
             let body = json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() });
-            let _: DataWrapper<serde_json::Value> =
-                client.patch(&format!("/v1/epics/{id}"), &body).await?;
+            let _: serde_json::Value = client.patch(&format!("/v1/epics/{id}"), &body).await?;
             eprintln!("Epic {code} closed");
         }
         EpicAction::Abandon { code } => {
@@ -163,8 +162,7 @@ pub async fn run(
                 .ok_or(format!("Epic '{code}' not found"))?;
             let id = epic["id"].as_str().ok_or("Epic has no id")?;
             let body = json!({ "status": "abandoned" });
-            let _: DataWrapper<serde_json::Value> =
-                client.patch(&format!("/v1/epics/{id}"), &body).await?;
+            let _: serde_json::Value = client.patch(&format!("/v1/epics/{id}"), &body).await?;
             eprintln!("Epic {code} abandoned");
         }
     }

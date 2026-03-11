@@ -1,7 +1,7 @@
 use clap::Args;
 
 use super::CliConfig;
-use crate::api_client::{ApiClient, DataWrapper};
+use crate::api_client::ApiClient;
 use crate::executor::{self, ExecutorConfig};
 
 #[derive(Args)]
@@ -20,17 +20,17 @@ pub async fn run(
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load sprint
-    let sprint: DataWrapper<serde_json::Value> = client
-        .get(&format!("/v1/sprints/{}", args.sprint_id))
+    let sprint: serde_json::Value = client
+        .get(&format!("/v1/er_sprints/{}", args.sprint_id))
         .await?;
 
-    let ceremony_log = sprint.data["ceremony_log"]
+    let ceremony_log = sprint["ceremony_log"]
         .as_array()
         .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
         .unwrap_or_else(|| "No ceremony log".to_string());
 
-    let epic_id = sprint.data["epic_id"].as_str().unwrap_or("?");
-    let sprint_number = sprint.data["number"].as_i64().unwrap_or(0);
+    let epic_id = sprint["epic_id"].as_str().unwrap_or("?");
+    let sprint_number = sprint["number"].as_i64().unwrap_or(0);
 
     let config = ExecutorConfig {
         model: args.model,

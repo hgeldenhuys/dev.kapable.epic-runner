@@ -25,7 +25,7 @@ const TABLES: &[&str] = &[
     "products",
     "stories",
     "epics",
-    "sprints",
+    "er_sprints",
     "impediments",
     "supervisor_decisions",
     "rubber_duck_sessions",

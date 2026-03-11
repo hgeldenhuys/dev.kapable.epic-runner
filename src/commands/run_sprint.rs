@@ -34,15 +34,14 @@ pub async fn run(
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load sprint from DB
-    let sprint_resp: DataWrapper<serde_json::Value> = client
-        .get(&format!("/v1/sprints/{}", args.sprint_id))
+    let sprint_resp: serde_json::Value = client
+        .get(&format!("/v1/er_sprints/{}", args.sprint_id))
         .await?;
-    let sprint: Sprint = serde_json::from_value(sprint_resp.data)?;
+    let sprint: Sprint = serde_json::from_value(sprint_resp)?;
 
     // 2. Load epic
-    let epic_resp: DataWrapper<serde_json::Value> =
-        client.get(&format!("/v1/epics/{}", sprint.epic_id)).await?;
-    let epic: Epic = serde_json::from_value(epic_resp.data)?;
+    let epic_resp: serde_json::Value = client.get(&format!("/v1/epics/{}", sprint.epic_id)).await?;
+    let epic: Epic = serde_json::from_value(epic_resp)?;
 
     // 3. Load product for repo_path
     let product_resp: DataWrapper<Vec<serde_json::Value>> = client
@@ -73,9 +72,9 @@ pub async fn run(
     eprintln!("[sprint-run] Nodes: {}", flow.nodes.len());
 
     // 5. Update sprint status to executing
-    let _: DataWrapper<serde_json::Value> = client
+    let _: serde_json::Value = client
         .patch(
-            &format!("/v1/sprints/{}", sprint.id),
+            &format!("/v1/er_sprints/{}", sprint.id),
             &json!({ "status": "executing", "started_at": chrono::Utc::now().to_rfc3339() }),
         )
         .await?;
@@ -121,9 +120,9 @@ pub async fn run(
         })
         .collect();
 
-    let _: DataWrapper<serde_json::Value> = client
+    let _: serde_json::Value = client
         .patch(
-            &format!("/v1/sprints/{}", sprint.id),
+            &format!("/v1/er_sprints/{}", sprint.id),
             &json!({
                 "status": final_status,
                 "finished_at": chrono::Utc::now().to_rfc3339(),
@@ -135,12 +134,12 @@ pub async fn run(
     // 10. Persist supervisor decisions + rubber duck sessions (best-effort)
     for result in &results {
         for decision in &result.supervisor_decisions {
-            let _: Result<DataWrapper<serde_json::Value>, _> = client
+            let _: Result<serde_json::Value, _> = client
                 .post("/v1/supervisor_decisions", &serde_json::to_value(decision)?)
                 .await;
         }
         for duck in &result.rubber_duck_sessions {
-            let _: Result<DataWrapper<serde_json::Value>, _> = client
+            let _: Result<serde_json::Value, _> = client
                 .post("/v1/rubber_duck_sessions", &serde_json::to_value(duck)?)
                 .await;
         }

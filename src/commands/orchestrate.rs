@@ -138,11 +138,8 @@ pub async fn run(
             "session_id": session_id.to_string(),
             "status": "planning",
         });
-        let sprint_resp: DataWrapper<serde_json::Value> =
-            client.post("/v1/sprints", &sprint_body).await?;
-        let sprint_id = sprint_resp.data["id"]
-            .as_str()
-            .ok_or("Sprint creation failed")?;
+        let sprint_resp: serde_json::Value = client.post("/v1/er_sprints", &sprint_body).await?;
+        let sprint_id = sprint_resp["id"].as_str().ok_or("Sprint creation failed")?;
 
         // Load and assign stories (take up to 5 ready stories)
         let stories: DataWrapper<Vec<serde_json::Value>> = client
@@ -160,16 +157,16 @@ pub async fn run(
             .filter_map(|s| s["id"].as_str().map(String::from))
             .collect();
 
-        let _: DataWrapper<serde_json::Value> = client
+        let _: serde_json::Value = client
             .patch(
-                &format!("/v1/sprints/{sprint_id}"),
+                &format!("/v1/er_sprints/{sprint_id}"),
                 &json!({ "stories": serde_json::to_value(&batch)? }),
             )
             .await?;
 
         // Transition stories to planned
         for sid in &story_ids {
-            let _: Result<DataWrapper<serde_json::Value>, _> = client
+            let _: Result<serde_json::Value, _> = client
                 .patch(
                     &format!("/v1/stories/{sid}"),
                     &json!({ "status": "planned" }),
@@ -199,7 +196,7 @@ pub async fn run(
             0 => {
                 // Intent satisfied — close epic
                 eprintln!("Intent satisfied — closing epic {}", epic.code);
-                let _: DataWrapper<serde_json::Value> = client
+                let _: serde_json::Value = client
                     .patch(
                         &format!("/v1/epics/{}", epic.id),
                         &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
@@ -214,7 +211,7 @@ pub async fn run(
             2 => {
                 // Blocked — impediment raised
                 eprintln!("Epic {} is BLOCKED by impediment", epic.code);
-                let _: DataWrapper<serde_json::Value> = client
+                let _: serde_json::Value = client
                     .patch(
                         &format!("/v1/epics/{}", epic.id),
                         &json!({ "status": "blocked" }),

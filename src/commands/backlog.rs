@@ -78,11 +78,11 @@ pub async fn run(
                 "points": points,
                 "status": "draft",
             });
-            let resp: DataWrapper<serde_json::Value> = client.post("/v1/stories", &body).await?;
+            let resp: serde_json::Value = client.post("/v1/stories", &body).await?;
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&resp.data)?);
+                println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let id = resp.data["id"].as_str().unwrap_or("?");
+                let id = resp["id"].as_str().unwrap_or("?");
                 eprintln!("Story created: {id}");
             }
         }
@@ -128,14 +128,12 @@ pub async fn run(
             }
         }
         BacklogAction::Show { id } => {
-            let resp: DataWrapper<serde_json::Value> =
-                client.get(&format!("/v1/stories/{id}")).await?;
-            println!("{}", serde_json::to_string_pretty(&resp.data)?);
+            let resp: serde_json::Value = client.get(&format!("/v1/stories/{id}")).await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
         }
         BacklogAction::Transition { id, status } => {
             let body = json!({ "status": status, "updated_at": chrono::Utc::now().to_rfc3339() });
-            let _: DataWrapper<serde_json::Value> =
-                client.patch(&format!("/v1/stories/{id}"), &body).await?;
+            let _: serde_json::Value = client.patch(&format!("/v1/stories/{id}"), &body).await?;
             eprintln!("Story {id} → {status}");
         }
         BacklogAction::Delete { id } => {

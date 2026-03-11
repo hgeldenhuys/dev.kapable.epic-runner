@@ -96,13 +96,12 @@ pub async fn run(
                 "description": description,
                 "status": "open",
             });
-            let resp: DataWrapper<serde_json::Value> =
-                client.post("/v1/impediments", &body).await?;
+            let resp: serde_json::Value = client.post("/v1/impediments", &body).await?;
 
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&resp.data)?);
+                println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let id = resp.data["id"].as_str().unwrap_or("?");
+                let id = resp["id"].as_str().unwrap_or("?");
                 eprintln!("Impediment raised: {id}");
                 eprintln!("  Blocking: {blocking_epic}");
                 if let Some(by) = &blocked_by {
@@ -115,7 +114,7 @@ pub async fn run(
                 "status": "resolved",
                 "resolved_at": chrono::Utc::now().to_rfc3339(),
             });
-            let _: DataWrapper<serde_json::Value> = client
+            let _: serde_json::Value = client
                 .patch(&format!("/v1/impediments/{id}"), &body)
                 .await?;
             eprintln!("Impediment {id} resolved");

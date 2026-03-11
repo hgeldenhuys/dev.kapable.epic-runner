@@ -34,7 +34,7 @@ pub async fn run(
 
     // Load sprints
     let sprints: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!("/v1/sprints?epic_id={epic_id}"))
+        .get(&format!("/v1/er_sprints?epic_id={epic_id}"))
         .await?;
 
     let sprint_summary = serde_json::to_string_pretty(&sprints.data)?;

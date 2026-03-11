@@ -39,7 +39,7 @@ pub async fn run(
             let epic_id = epic_data["id"].as_str().ok_or("Epic has no id")?;
 
             let resp: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/sprints?epic_id={epic_id}"))
+                .get(&format!("/v1/er_sprints?epic_id={epic_id}"))
                 .await?;
 
             if cli.json {
@@ -70,9 +70,8 @@ pub async fn run(
             }
         }
         SprintAction::Show { id } => {
-            let resp: DataWrapper<serde_json::Value> =
-                client.get(&format!("/v1/sprints/{id}")).await?;
-            println!("{}", serde_json::to_string_pretty(&resp.data)?);
+            let resp: serde_json::Value = client.get(&format!("/v1/er_sprints/{id}")).await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
         }
     }
 
