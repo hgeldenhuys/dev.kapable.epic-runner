@@ -6,6 +6,29 @@ use super::CliConfig;
 use crate::api_client::{ApiClient, DataWrapper};
 use crate::types::Story;
 
+/// Generate the next sequential story code for a product.
+/// Fetches the product prefix and counts existing stories to derive `{PREFIX}-{NNN}`.
+pub async fn next_story_code(
+    client: &ApiClient,
+    product_id: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let all_products: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/products").await?;
+    let product_data = all_products
+        .data
+        .iter()
+        .find(|p| p["id"].as_str() == Some(product_id))
+        .ok_or("Product not found")?;
+    let prefix = product_data["story_prefix"].as_str().unwrap_or("S");
+
+    let all_stories: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
+    let story_count = all_stories
+        .data
+        .iter()
+        .filter(|s| s["product_id"].as_str() == Some(product_id))
+        .count();
+    Ok(format!("{}-{:03}", prefix, story_count + 1))
+}
+
 #[derive(Args)]
 pub struct BacklogArgs {
     #[command(subcommand)]
@@ -61,8 +84,7 @@ pub async fn run(
             description,
             points,
         } => {
-            // Look up product by slug (client-side filter since JSONB tables
-            // may not support server-side query param filtering)
+            // Look up product by slug
             let all_products: DataWrapper<Vec<serde_json::Value>> =
                 client.get("/v1/products").await?;
             let product_data = all_products
@@ -71,17 +93,8 @@ pub async fn run(
                 .find(|p| p["slug"].as_str() == Some(product.as_str()))
                 .ok_or(format!("Product '{product}' not found"))?;
             let product_id = product_data["id"].as_str().ok_or("Product has no id")?;
-            let prefix = product_data["story_prefix"].as_str().unwrap_or("S");
 
-            // Count existing stories to determine next sequence number
-            let all_stories: DataWrapper<Vec<serde_json::Value>> =
-                client.get("/v1/stories").await?;
-            let story_count = all_stories
-                .data
-                .iter()
-                .filter(|s| s["product_id"].as_str() == Some(product_id))
-                .count();
-            let code = format!("{}-{:03}", prefix, story_count + 1);
+            let code = next_story_code(client, product_id).await?;
 
             let body = json!({
                 "product_id": product_id,

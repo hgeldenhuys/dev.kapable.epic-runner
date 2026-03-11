@@ -545,8 +545,17 @@ INSTRUCTIONS:
             }
         } else {
             // Create new story (prerequisite discovered by re-groom)
+            let code = match super::backlog::next_story_code(client, &epic.product_id.to_string()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("Failed to generate story code: {e}");
+                    continue;
+                }
+            };
             let body = json!({
+                "product_id": epic.product_id.to_string(),
                 "epic_code": epic.code,
+                "code": code,
                 "title": title,
                 "acceptance_criteria": story["acceptance_criteria"],
                 "points": story["points"].as_i64().unwrap_or(2),
