@@ -144,6 +144,10 @@ pub async fn run(
                         .ok();
                 }
             }
+
+            // Rebase worktree to latest main (WoW: Sprint Discipline — process improvement 2026-03-11)
+            // This prevents stale worktrees from redoing work already merged to main.
+            rebase_worktree_to_main(&worktree_path);
         }
 
         // Create sprint in DB
@@ -418,6 +422,103 @@ async fn load_sprint_history(client: &ApiClient, epic_code: &str) -> Option<Vec<
     }
 
     Some(history)
+}
+
+/// Rebase the epic worktree to the latest origin/main.
+/// If rebase conflicts, aborts and continues on the current base.
+/// Logs the base commit SHA for sprint context awareness.
+fn rebase_worktree_to_main(worktree_path: &str) {
+    // Fetch latest main from origin
+    let fetch = std::process::Command::new("git")
+        .args(["fetch", "origin", "main"])
+        .current_dir(worktree_path)
+        .output();
+
+    if let Err(e) = fetch {
+        tracing::warn!(error = %e, "Failed to fetch origin/main — skipping rebase");
+        return;
+    }
+    let fetch_output = fetch.unwrap();
+    if !fetch_output.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch_output.stderr);
+        tracing::warn!(stderr = %stderr, "git fetch origin main failed — skipping rebase");
+        return;
+    }
+
+    // Get current HEAD before rebase for logging
+    let head_before = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    // Get origin/main SHA for comparison
+    let origin_main = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "origin/main"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if head_before == origin_main {
+        tracing::debug!(
+            head = %head_before,
+            "Worktree already at origin/main — no rebase needed"
+        );
+        return;
+    }
+
+    // Attempt rebase
+    let rebase = std::process::Command::new("git")
+        .args(["rebase", "origin/main"])
+        .current_dir(worktree_path)
+        .output();
+
+    match rebase {
+        Ok(output) if output.status.success() => {
+            let head_after = std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .current_dir(worktree_path)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+
+            eprintln!(
+                "{} Worktree rebased to origin/main ({} → {})",
+                "[rebase]".dimmed(),
+                head_before.dimmed(),
+                head_after.green(),
+            );
+        }
+        Ok(output) => {
+            // Rebase failed (conflicts) — abort and continue on current base
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                stderr = %stderr,
+                "Rebase conflicted — aborting and continuing on current base ({})",
+                head_before,
+            );
+            std::process::Command::new("git")
+                .args(["rebase", "--abort"])
+                .current_dir(worktree_path)
+                .output()
+                .ok();
+
+            eprintln!(
+                "{} Rebase conflicted — continuing on {} (origin/main is {})",
+                "[rebase]".yellow(),
+                head_before.dimmed(),
+                origin_main.dimmed(),
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "git rebase command failed to execute");
+        }
+    }
 }
 
 /// Load retro output for a specific sprint from sprint_learnings table.
