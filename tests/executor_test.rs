@@ -13,6 +13,7 @@ fn build_command_includes_all_flags() {
         system_prompt: Some("You are a builder".into()),
         prompt: "Build the auth system".into(),
         chrome: true,
+        brief: false,
         max_budget_usd: Some(5.0),
         allowed_tools: None,
         resume_session: false,
@@ -32,6 +33,7 @@ fn build_command_includes_all_flags() {
     assert!(args.contains(&"AUTH-001".to_string()));
     assert!(args.contains(&"--add-dir".to_string()));
     assert!(args.contains(&"/tmp/other".to_string()));
+    assert!(!args.contains(&"--brief".to_string()));
     // Budget enforcement disabled — will re-enable with production cost tracking
     // assert!(args.contains(&"--max-budget-usd".to_string()));
     // assert!(args.contains(&"5".to_string()));
@@ -49,6 +51,7 @@ fn build_command_resume_uses_resume_flag() {
         system_prompt: None,
         prompt: "Continue".into(),
         chrome: false,
+        brief: false,
         max_budget_usd: None,
         allowed_tools: None,
         resume_session: true,
@@ -78,6 +81,7 @@ fn build_command_with_agent() {
         system_prompt: None,
         prompt: "Diagnose".into(),
         chrome: false,
+        brief: false,
         max_budget_usd: None,
         allowed_tools: Some(vec!["Read".into(), "Glob".into()]),
         resume_session: false,
@@ -94,4 +98,32 @@ fn build_command_with_agent() {
     assert!(args.contains(&"rubber-duck".to_string()));
     assert!(args.contains(&"--allowed-tools".to_string()));
     assert!(args.contains(&"Read,Glob".to_string()));
+}
+
+#[test]
+fn build_command_brief_flag() {
+    let config = ExecutorConfig {
+        model: "sonnet".into(),
+        effort: "high".into(),
+        worktree_name: "FLOW-001".into(),
+        session_id: Uuid::new_v4(),
+        repo_path: "/tmp/test-repo".into(),
+        add_dirs: vec![],
+        system_prompt: None,
+        prompt: "Research the codebase".into(),
+        chrome: false,
+        brief: true,
+        max_budget_usd: None,
+        allowed_tools: None,
+        resume_session: false,
+        agent: None,
+        heartbeat_timeout_secs: 300,
+    };
+    let cmd = build_command(&config);
+    let args: Vec<_> = cmd
+        .as_std()
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert!(args.contains(&"--brief".to_string()));
 }

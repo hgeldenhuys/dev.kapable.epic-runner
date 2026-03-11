@@ -23,6 +23,8 @@ pub struct ExecutorConfig {
     pub resume_session: bool,
     pub agent: Option<String>,
     pub heartbeat_timeout_secs: u64,
+    /// Enable --brief mode (activates SendUserMessage tool for structured status updates)
+    pub brief: bool,
 }
 
 pub struct ExecutorResult {
@@ -33,6 +35,8 @@ pub struct ExecutorResult {
     pub events: Vec<SprintEvent>,
     pub stop_hook_fired: bool,
     pub last_tool_use: Option<String>,
+    /// Structured messages sent by the subprocess via SendUserMessage tool
+    pub user_messages: Vec<String>,
 }
 
 pub fn build_command(config: &ExecutorConfig) -> Command {
@@ -53,6 +57,9 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
 
     if let Some(agent) = &config.agent {
         cmd.arg("--agent").arg(agent);
+    }
+    if config.brief {
+        cmd.arg("--brief");
     }
     if config.chrome {
         cmd.arg("--chrome");
@@ -93,6 +100,7 @@ pub async fn execute(
     let mut cost_usd = None;
     let mut stop_hook_fired = false;
     let mut last_tool_use = None;
+    let mut user_messages: Vec<String> = Vec::new();
     let heartbeat = Duration::from_secs(config.heartbeat_timeout_secs);
 
     loop {
@@ -124,6 +132,20 @@ pub async fn execute(
                                 }
                                 StreamEvent::Assistant { message } => {
                                     for block in &message.content {
+                                        // Check for SendUserMessage tool (--brief mode)
+                                        if let Some(msg) = stream::extract_user_message(block) {
+                                            tracing::info!(message = %msg, "Agent status update (SendUserMessage)");
+                                            user_messages.push(msg.clone());
+                                            let se = SprintEvent {
+                                                sprint_id: config.session_id,
+                                                event_type: SprintEventType::AgentMessage,
+                                                summary: msg,
+                                                detail: None,
+                                                timestamp: chrono::Utc::now(),
+                                            };
+                                            event_callback(se.clone());
+                                            events.push(se);
+                                        }
                                         if let stream::ContentBlock::ToolUse { name, .. } = block {
                                             last_tool_use = Some(name.clone());
                                             let se = SprintEvent {
@@ -173,5 +195,6 @@ pub async fn execute(
         events,
         stop_hook_fired,
         last_tool_use,
+        user_messages,
     })
 }

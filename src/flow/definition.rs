@@ -44,6 +44,9 @@ pub struct CeremonyNodeConfig {
     pub prompt: Option<String>,
     #[serde(default)]
     pub chrome: bool,
+    /// Enable --brief mode for this node (activates SendUserMessage tool)
+    #[serde(default)]
+    pub brief: bool,
     pub allowed_tools: Option<Vec<String>>,
     pub heartbeat_timeout_secs: Option<u64>,
     pub gate_field: Option<String>,

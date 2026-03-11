@@ -58,6 +58,7 @@ pub async fn run(
         resume_session: false,
         agent: None,
         heartbeat_timeout_secs: 180,
+        brief: false,
     };
 
     eprintln!("Running retrospective for sprint {}...", args.sprint_id);

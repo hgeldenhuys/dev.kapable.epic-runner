@@ -248,6 +248,7 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
         resume_session: false,
         agent: Some("rubber-duck".to_string()),
         heartbeat_timeout_secs: 120,
+        brief: false,
     };
 
     match executor::execute(duck_config, &|_| {}).await {

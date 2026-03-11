@@ -484,6 +484,7 @@ fn build_executor_config(
             .map(|s| interpolate(s, ctx, input, all_results)),
         prompt: interpolate(c.prompt.as_deref().unwrap_or(""), ctx, input, all_results),
         chrome: c.chrome,
+        brief: c.brief,
         max_budget_usd: ctx.budget_override.or(c.budget_usd),
         allowed_tools: c.allowed_tools.clone(),
         resume_session: false,
