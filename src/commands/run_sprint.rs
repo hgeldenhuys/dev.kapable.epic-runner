@@ -233,7 +233,39 @@ pub async fn run(
         create_backlog_from_retro(&epic.code, sprint.number, retro_result);
     }
 
-    // 12. Flush event sink — drop sender, wait for background writer to finish
+    // 12. Emit structured metrics summary (for aggregation + debugging)
+    let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
+    let completed_nodes = results
+        .iter()
+        .filter(|r| r.status == CeremonyStatus::Completed)
+        .count();
+    let failed_nodes = results
+        .iter()
+        .filter(|r| r.status == CeremonyStatus::Failed)
+        .count();
+    let skipped_nodes = results
+        .iter()
+        .filter(|r| r.status == CeremonyStatus::Skipped)
+        .count();
+    let total_decisions: usize = results.iter().map(|r| r.supervisor_decisions.len()).sum();
+    let total_ducks: usize = results.iter().map(|r| r.rubber_duck_sessions.len()).sum();
+
+    let metrics = json!({
+        "epic_code": epic.code,
+        "sprint_number": sprint.number,
+        "status": final_status,
+        "intent_satisfied": intent_satisfied,
+        "nodes_completed": completed_nodes,
+        "nodes_failed": failed_nodes,
+        "nodes_skipped": skipped_nodes,
+        "total_cost_usd": total_cost,
+        "supervisor_decisions": total_decisions,
+        "rubber_duck_sessions": total_ducks,
+        "finished_at": chrono::Utc::now().to_rfc3339(),
+    });
+    tracing::info!(metrics = %serde_json::to_string(&metrics).unwrap_or_default(), "Sprint metrics");
+
+    // 13. Flush event sink — drop sender, wait for background writer to finish
     drop(sink);
     let _ = sink_handle.await;
 
