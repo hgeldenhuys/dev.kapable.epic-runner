@@ -82,7 +82,20 @@ cargo build --release
 
 ## Data API
 
-Uses Kapable Data API (`/v1/data/{project_id}/...`) with `x-api-key` header. Tables provisioned by `epic-runner init`: products, stories, epics, sprints, impediments, supervisor_decisions, rubber_duck_sessions.
+Uses Kapable Data API with `x-api-key` header. **Key-scoped routing** — the API key determines which project's data you access. All routes are `/v1/{table_name}`, NOT `/v1/data/{project_id}/...`.
+
+Tables provisioned by `epic-runner init`: products, stories, epics, **er_sprints** (not `sprints` — platform route collision with agentboard), impediments, supervisor_decisions, rubber_duck_sessions.
+
+**Response shapes:**
+- `GET /v1/{table}` (list) → `{"data": [...], "pagination": {...}}` — use `DataWrapper<Vec<Value>>`
+- `GET /v1/{table}/{id}` (single) → bare JSON object
+- `POST /v1/{table}` (create) → bare JSON object
+- `PATCH /v1/{table}/{id}` (update) → bare JSON object
+- `PUT /v1/_meta/tables/{name}` (DDL) → bare JSON object
+
+**Auth tiers:**
+- `sk_admin_*` — management operations (create projects, DDL)
+- `sk_live_*` — project-scoped data operations (CRUD on tables)
 
 ## Claude Headless Integration
 

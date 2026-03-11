@@ -181,8 +181,18 @@ impl ApiClient {
 
     fn status_to_error(&self, status: StatusCode, body: String) -> ApiError {
         match status.as_u16() {
-            401 | 403 => ApiError::Auth(body),
-            404 => ApiError::NotFound(body),
+            401 => ApiError::Auth(format!(
+                "Unauthorized (401): {body}\n  → Check your API key. Admin ops need sk_admin_*, data ops need sk_live_*"
+            )),
+            402 => ApiError::Auth(format!(
+                "Payment required (402): {body}\n  → API quota exceeded. Check usage_metrics or bump the plan tier."
+            )),
+            403 => ApiError::Auth(format!(
+                "Forbidden (403): {body}\n  → Key lacks permission. sk_live_ keys can't do DDL; sk_admin_ can't access project data."
+            )),
+            404 => ApiError::NotFound(format!(
+                "Not found (404): {body}\n  → Table may not exist, or the route may be shadowed by a platform route."
+            )),
             422 => ApiError::Validation(body),
             _ => ApiError::Server(format!("{status}: {body}")),
         }

@@ -21,6 +21,10 @@ pub struct InitArgs {
 
 /// Table definitions using the Kapable _meta/tables API format.
 /// storage_mode: "jsonb" means schemaless (all data stored in JSONB columns).
+///
+/// NOTE: `er_sprints` (not `sprints`) — the platform's agentboard module registers
+/// `/v1/sprints` as a management route, which shadows any data table named `sprints`.
+/// The `er_` prefix avoids this route collision. See: 69d56ad.
 const TABLES: &[&str] = &[
     "products",
     "stories",
