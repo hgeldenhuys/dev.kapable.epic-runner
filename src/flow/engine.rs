@@ -584,10 +584,25 @@ async fn execute_deploy_node(
     }
 
     // Step 4: Trigger Connect App Pipeline
+    // Resolve deploy_app_id: config value → env var → error
+    // Config values like "${DEPLOY_APP_ID}" are treated as env var references
     let app_id = match &c.deploy_app_id {
-        Some(id) => id.clone(),
+        Some(id) if id.starts_with("${") && id.ends_with('}') => {
+            let var_name = &id[2..id.len() - 1];
+            std::env::var(var_name).ok()
+        }
+        Some(id) if !id.is_empty() => Some(id.clone()),
+        _ => None,
+    }
+    .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
+
+    let app_id = match app_id {
+        Some(id) => id,
         None => {
-            return Ok(deploy_failed(node, "deploy_app_id not configured in flow YAML"));
+            return Ok(deploy_failed(
+                node,
+                "deploy_app_id not configured — set DEPLOY_APP_ID env var or deploy_app_id in flow YAML",
+            ));
         }
     };
     let api_key = c.deploy_api_key.clone().unwrap_or_else(|| {
