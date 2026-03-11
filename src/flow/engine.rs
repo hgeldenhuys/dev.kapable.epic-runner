@@ -15,6 +15,7 @@ pub struct FlowContext {
     pub repo_path: String,
     pub model_override: Option<String>,
     pub effort_override: Option<String>,
+    pub budget_override: Option<f64>,
     pub add_dirs: Vec<String>,
 }
 
@@ -413,7 +414,7 @@ fn build_executor_config(
             .map(|s| interpolate(s, ctx, input, all_results)),
         prompt: interpolate(c.prompt.as_deref().unwrap_or(""), ctx, input, all_results),
         chrome: c.chrome,
-        max_budget_usd: c.budget_usd,
+        max_budget_usd: ctx.budget_override.or(c.budget_usd),
         allowed_tools: c.allowed_tools.clone(),
         resume_session: false,
         agent: c.agent.clone(),

@@ -31,6 +31,10 @@ pub struct OrchestrateArgs {
     #[arg(long)]
     pub flow: Option<String>,
 
+    /// Override budget (USD) for all ceremony nodes
+    #[arg(long)]
+    pub budget_override: Option<f64>,
+
     /// Dry run — plan sprints without executing
     #[arg(long, default_value = "false")]
     pub dry_run: bool,
@@ -193,6 +197,9 @@ pub async fn run(
         }
         if let Some(flow) = &args.flow {
             cmd.arg("--flow").arg(flow);
+        }
+        if let Some(budget) = args.budget_override {
+            cmd.arg("--budget-override").arg(budget.to_string());
         }
 
         let exit_status = cmd.status()?;

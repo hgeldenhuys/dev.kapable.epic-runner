@@ -27,6 +27,10 @@ pub struct SprintRunArgs {
     /// Flow file override (YAML path)
     #[arg(long)]
     pub flow: Option<String>,
+
+    /// Override budget (USD) for all ceremony nodes
+    #[arg(long)]
+    pub budget_override: Option<f64>,
 }
 
 pub async fn run(
@@ -104,6 +108,7 @@ pub async fn run(
         repo_path: product.repo_path.clone(),
         model_override: Some(args.model.clone()),
         effort_override: Some(args.effort.clone()),
+        budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
     };
 
