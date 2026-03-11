@@ -12,12 +12,18 @@ pub async fn load_flow(
             return Ok(CeremonyFlow::from_yaml(&yaml)?);
         }
         // If not a file path, treat as flow ID (future: fetch from API)
-        tracing::warn!(flow_id = path, "Flow ID fetch from API not yet implemented — using embedded default");
+        tracing::warn!(
+            flow_id = path,
+            "Flow ID fetch from API not yet implemented — using embedded default"
+        );
     }
 
     // 2. Config flow_id: future — fetch from Kapable Flow API
     if let Some(flow_id) = config_flow_id {
-        tracing::warn!(flow_id, "Flow API fetch not yet implemented — using embedded default");
+        tracing::warn!(
+            flow_id,
+            "Flow API fetch not yet implemented — using embedded default"
+        );
     }
 
     // 3. Embedded default

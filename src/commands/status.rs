@@ -39,10 +39,7 @@ pub async fn run(
 
     if cli.json {
         let mut status = serde_json::Map::new();
-        status.insert(
-            "products".to_string(),
-            serde_json::to_value(&products)?,
-        );
+        status.insert("products".to_string(), serde_json::to_value(&products)?);
         println!("{}", serde_json::to_string_pretty(&status)?);
         return Ok(());
     }

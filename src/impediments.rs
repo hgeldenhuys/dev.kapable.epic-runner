@@ -11,8 +11,7 @@ pub async fn check_blocking_impediments(
         .data
         .into_iter()
         .filter(|i| {
-            i["blocking_epic"].as_str() == Some(epic_code)
-                && i["status"].as_str() == Some("open")
+            i["blocking_epic"].as_str() == Some(epic_code) && i["status"].as_str() == Some("open")
         })
         .collect();
     Ok(blocking)

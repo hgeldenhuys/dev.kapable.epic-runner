@@ -93,8 +93,7 @@ pub async fn run(
         } => {
             // Fetch all stories and apply client-side filters (JSONB tables
             // don't support arbitrary query param filtering)
-            let resp: DataWrapper<Vec<serde_json::Value>> =
-                client.get("/v1/stories").await?;
+            let resp: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
 
             let filtered: Vec<&serde_json::Value> = resp
                 .data
@@ -143,7 +142,9 @@ pub async fn run(
         BacklogAction::Transition { id, status } => {
             let full_id = client.resolve_id("stories", &id).await?;
             let body = json!({ "status": status, "updated_at": chrono::Utc::now().to_rfc3339() });
-            let _: serde_json::Value = client.patch(&format!("/v1/stories/{full_id}"), &body).await?;
+            let _: serde_json::Value = client
+                .patch(&format!("/v1/stories/{full_id}"), &body)
+                .await?;
             eprintln!("Story {full_id} → {status}");
         }
         BacklogAction::Delete { id } => {

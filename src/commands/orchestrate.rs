@@ -141,8 +141,7 @@ pub async fn run(
         let sprint_id = sprint_resp["id"].as_str().ok_or("Sprint creation failed")?;
 
         // Load and assign stories (client-side filter for ready stories in this epic)
-        let all_stories: DataWrapper<Vec<serde_json::Value>> =
-            client.get("/v1/stories").await?;
+        let all_stories: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
         let ready_stories: Vec<&serde_json::Value> = all_stories
             .data
             .iter()
@@ -227,7 +226,10 @@ pub async fn run(
             }
             _ => {
                 // Unexpected exit (crash, context exhaustion, SIGKILL)
-                tracing::warn!(exit_code, "Sprint process died unexpectedly — continuing to next sprint");
+                tracing::warn!(
+                    exit_code,
+                    "Sprint process died unexpectedly — continuing to next sprint"
+                );
             }
         }
     }
