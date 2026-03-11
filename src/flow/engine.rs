@@ -453,9 +453,9 @@ async fn execute_node(
             rubber_duck_sessions: vec![],
         }),
 
-        CeremonyNodeType::Deploy => {
-            execute_deploy_node(node, ctx, sink).await
-        }
+        CeremonyNodeType::Deploy => execute_deploy_node(node, ctx, sink).await,
+
+        CeremonyNodeType::Promote => execute_promote_node(node, ctx, sink).await,
     }
 }
 
@@ -537,7 +537,10 @@ async fn execute_deploy_node(
         .output()?;
     if !checkout.status.success() {
         let err = String::from_utf8_lossy(&checkout.stderr);
-        return Ok(deploy_failed(node, &format!("Failed to checkout main: {}", err)));
+        return Ok(deploy_failed(
+            node,
+            &format!("Failed to checkout main: {}", err),
+        ));
     }
 
     // Pull latest main first
@@ -585,8 +588,8 @@ async fn execute_deploy_node(
 
     // Step 4: Trigger Connect App Pipeline
     // Resolve deploy settings: YAML node config → project config.toml → env var → default
-    let project_config = crate::config::find_project_config()
-        .and_then(|p| crate::config::read_config(&p).ok());
+    let project_config =
+        crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
 
     // Resolve deploy_app_id with full cascade
     let resolve_env_ref = |val: &str| -> Option<String> {
@@ -600,8 +603,15 @@ async fn execute_deploy_node(
         }
     };
 
-    let app_id = c.deploy_app_id.as_deref().and_then(resolve_env_ref)
-        .or_else(|| project_config.as_ref().and_then(|c| c.deploy_app_id().map(String::from)))
+    let app_id = c
+        .deploy_app_id
+        .as_deref()
+        .and_then(resolve_env_ref)
+        .or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|c| c.deploy_app_id().map(String::from))
+        })
         .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
 
     let app_id = match app_id {
@@ -613,14 +623,26 @@ async fn execute_deploy_node(
             ));
         }
     };
-    let api_key = c.deploy_api_key.clone()
-        .or_else(|| project_config.as_ref().and_then(|c| c.deploy_api_key().map(String::from)))
+    let api_key = c
+        .deploy_api_key
+        .clone()
+        .or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|c| c.deploy_api_key().map(String::from))
+        })
         .unwrap_or_else(|| {
             std::env::var("KAPABLE_ADMIN_API_KEY")
                 .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
         });
-    let api_url = c.deploy_api_url.clone()
-        .or_else(|| project_config.as_ref().and_then(|c| c.deploy_api_url().map(String::from)))
+    let api_url = c
+        .deploy_api_url
+        .clone()
+        .or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|c| c.deploy_api_url().map(String::from))
+        })
         .unwrap_or_else(|| {
             std::env::var("KAPABLE_API_URL")
                 .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
@@ -642,10 +664,19 @@ async fn execute_deploy_node(
         api_url, app_id
     );
 
+    // Build deploy request body — include slot if configured (for blue-green)
+    let mut deploy_body = serde_json::json!({});
+    let deploy_slot = c.deploy_slot.as_deref();
+    if let Some(slot) = deploy_slot {
+        deploy_body["slot"] = serde_json::json!(slot);
+        tracing::info!(slot, "Deploying to slot (blue-green mode)");
+    }
+
     let http_client = reqwest::Client::new();
     let resp = http_client
         .post(&deploy_url)
         .header("x-api-key", &api_key)
+        .json(&deploy_body)
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await;
@@ -668,7 +699,10 @@ async fn execute_deploy_node(
             ));
         }
         Err(e) => {
-            return Ok(deploy_failed(node, &format!("Deploy API request failed: {}", e)));
+            return Ok(deploy_failed(
+                node,
+                &format!("Deploy API request failed: {}", e),
+            ));
         }
     };
 
@@ -682,7 +716,9 @@ async fn execute_deploy_node(
             "Waiting for deploy to complete (timeout: {}s)",
             timeout_secs
         ),
-        detail: pipeline_run_id.as_ref().map(|id| serde_json::json!({"pipeline_run_id": id})),
+        detail: pipeline_run_id
+            .as_ref()
+            .map(|id| serde_json::json!({"pipeline_run_id": id})),
         timestamp: chrono::Utc::now(),
     });
 
@@ -716,10 +752,7 @@ async fn execute_deploy_node(
                         }
                         "failed" | "error" | "cancelled" => {
                             let msg = body["error"].as_str().unwrap_or("unknown error");
-                            return Ok(deploy_failed(
-                                node,
-                                &format!("Deploy failed: {}", msg),
-                            ));
+                            return Ok(deploy_failed(node, &format!("Deploy failed: {}", msg)));
                         }
                         _ => {
                             let elapsed = start.elapsed().as_secs();
@@ -755,10 +788,22 @@ async fn execute_deploy_node(
         }
     }
 
+    // Build summary with slot info and URLs for downstream A/B judge
+    let slot_info = deploy_slot.unwrap_or("primary");
+    let production_url = c.deploy_production_url.as_deref().unwrap_or("");
+    let standby_url = c.deploy_standby_url.as_deref().unwrap_or("");
+
     let summary = if deploy_success {
-        format!("Deployed {} successfully", app_id)
+        let mut s = format!("Deployed {} to slot '{}' successfully", app_id, slot_info);
+        if !production_url.is_empty() || !standby_url.is_empty() {
+            s.push_str(&format!(
+                "\n\nA/B URLs for judge:\n- Production (live): {}\n- Standby (new): {}",
+                production_url, standby_url
+            ));
+        }
+        s
     } else {
-        format!("Deploy {} uncertain", app_id)
+        format!("Deploy {} to slot '{}' uncertain", app_id, slot_info)
     };
 
     sink.emit(SprintEvent {
@@ -785,6 +830,140 @@ async fn execute_deploy_node(
         supervisor_decisions: vec![],
         rubber_duck_sessions: vec![],
     })
+}
+
+/// Execute a Promote node: call the promote-slot API to shift 100% traffic to standby.
+async fn execute_promote_node(
+    node: &CeremonyNode,
+    ctx: &FlowContext,
+    sink: &EventSink,
+) -> Result<NodeResult, Box<dyn std::error::Error>> {
+    let c = &node.config;
+
+    let project_config =
+        crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
+
+    let resolve_env_ref = |val: &str| -> Option<String> {
+        if val.starts_with("${") && val.ends_with('}') {
+            let var_name = &val[2..val.len() - 1];
+            std::env::var(var_name).ok()
+        } else if !val.is_empty() {
+            Some(val.to_string())
+        } else {
+            None
+        }
+    };
+
+    let app_id = c
+        .deploy_app_id
+        .as_deref()
+        .and_then(resolve_env_ref)
+        .or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|c| c.deploy_app_id().map(String::from))
+        })
+        .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
+
+    let app_id = match app_id {
+        Some(id) => id,
+        None => {
+            return Ok(deploy_failed(
+                node,
+                "deploy_app_id not configured for promote",
+            ));
+        }
+    };
+
+    let api_key = c
+        .deploy_api_key
+        .clone()
+        .or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|c| c.deploy_api_key().map(String::from))
+        })
+        .unwrap_or_else(|| {
+            std::env::var("KAPABLE_ADMIN_API_KEY")
+                .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
+        });
+    let api_url = c
+        .deploy_api_url
+        .clone()
+        .or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|c| c.deploy_api_url().map(String::from))
+        })
+        .unwrap_or_else(|| {
+            std::env::var("KAPABLE_API_URL")
+                .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
+        });
+
+    let slot_name = c.deploy_slot.as_deref().unwrap_or("standby");
+
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Promoting slot '{}' to primary (100% traffic)", slot_name),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    let promote_url = format!(
+        "{}/v1/apps/{}/environments/production/slots/{}/promote",
+        api_url, app_id, slot_name
+    );
+
+    let http_client = reqwest::Client::new();
+    let resp = http_client
+        .post(&promote_url)
+        .header("x-api-key", &api_key)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let summary = format!(
+                "Promoted slot '{}' to primary — zero-downtime swap complete",
+                slot_name
+            );
+            sink.emit(SprintEvent {
+                sprint_id: ctx.sprint.session_id,
+                event_type: SprintEventType::DeployStep,
+                node_id: Some(node.key.clone()),
+                node_label: Some(node.label.clone()),
+                summary: summary.clone(),
+                detail: None,
+                timestamp: chrono::Utc::now(),
+            });
+            Ok(NodeResult {
+                key: node.key.clone(),
+                status: CeremonyStatus::Completed,
+                output: Some(summary),
+                cost_usd: None,
+                impediment_raised: false,
+                judge_verdict: None,
+                supervisor_decisions: vec![],
+                rubber_duck_sessions: vec![],
+            })
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            Ok(deploy_failed(
+                node,
+                &format!("Promote API returned {}: {}", status, body),
+            ))
+        }
+        Err(e) => Ok(deploy_failed(
+            node,
+            &format!("Promote API request failed: {}", e),
+        )),
+    }
 }
 
 /// Helper to create a failed deploy NodeResult
@@ -898,6 +1077,14 @@ fn interpolate(
         String::new()
     };
 
+    // Extract A/B URLs from deploy node output (if present)
+    let deploy_output = all_results
+        .get("deploy_standby")
+        .or_else(|| all_results.get("deploy"))
+        .and_then(|r| r.output.as_deref())
+        .unwrap_or("");
+    let ab_urls = deploy_output; // The full deploy output contains A/B URLs section
+
     template
         .replace("{{input}}", input)
         .replace("{{ceremony_results}}", &ceremony_results)
@@ -905,6 +1092,7 @@ fn interpolate(
         .replace("{{supervisor_decisions}}", &supervisor_decisions)
         .replace("{{repo.claude_md}}", &claude_md)
         .replace("{{previous_learnings}}", &ctx.previous_learnings)
+        .replace("{{deploy_output}}", ab_urls)
         .replace("{{epic.code}}", &ctx.epic.code)
         .replace("{{epic.title}}", &ctx.epic.title)
         .replace("{{epic.intent}}", &ctx.epic.intent)

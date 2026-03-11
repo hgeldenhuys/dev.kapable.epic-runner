@@ -172,10 +172,7 @@ pub async fn run(
             .iter()
             .filter(|s| {
                 s["epic_code"].as_str() == Some(epic.code.as_str())
-                    && matches!(
-                        s["status"].as_str(),
-                        Some("ready" | "planned" | "draft")
-                    )
+                    && matches!(s["status"].as_str(), Some("ready" | "planned" | "draft"))
             })
             .collect();
         eligible_stories.sort_by_key(|s| match s["status"].as_str() {
@@ -415,7 +412,10 @@ async fn regroom_stories(client: &ApiClient, epic: &Epic, sprint_num: i32) {
             parts.join("\n")
         }
         None => {
-            tracing::debug!("No retro available for sprint {} — skipping re-groom", sprint_num);
+            tracing::debug!(
+                "No retro available for sprint {} — skipping re-groom",
+                sprint_num
+            );
             return;
         }
     };
@@ -507,9 +507,7 @@ INSTRUCTIONS:
     let json_start = stdout.find('[');
     let json_end = stdout.rfind(']');
     let regroom_result: Option<Vec<serde_json::Value>> = match (json_start, json_end) {
-        (Some(start), Some(end)) if end > start => {
-            serde_json::from_str(&stdout[start..=end]).ok()
-        }
+        (Some(start), Some(end)) if end > start => serde_json::from_str(&stdout[start..=end]).ok(),
         _ => None,
     };
 
@@ -525,7 +523,9 @@ INSTRUCTIONS:
     let mut updated = 0;
     let mut created = 0;
     for story in &stories {
-        let story_id = story["id"].as_str().filter(|s| !s.is_empty() && *s != "null");
+        let story_id = story["id"]
+            .as_str()
+            .filter(|s| !s.is_empty() && *s != "null");
         let title = story["title"].as_str().unwrap_or("Untitled");
 
         if let Some(id) = story_id {

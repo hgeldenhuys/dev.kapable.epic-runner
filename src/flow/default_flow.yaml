@@ -1,10 +1,12 @@
 name: "Default Sprint Ceremony"
-version: "2.1.0"
+version: "2.2.0"
 description: |
-  Full autonomous ceremony with dual judgment:
-  research → groom → execute → code judge → deploy → production judge.
+  Full autonomous ceremony with A/B blue-green deploy:
+  research → groom → execute → code judge → deploy to STANDBY → A/B judge → promote.
   Code judge (pre-deploy): reviews diff, runs build, verifies quality.
-  Production judge (post-deploy): Chrome-based end-user verification.
+  A/B judge (post-deploy): Chrome-based comparison of standby vs live production.
+  If judge passes: promote standby to primary (zero-downtime swap).
+  If judge fails: standby stays dormant (automatic rollback — no action needed).
   Gates short-circuit on failure. SM retro always runs.
 
 nodes:
@@ -206,12 +208,15 @@ nodes:
       gate_field: status
       gate_expect: completed
 
-  - key: deploy
+  - key: deploy_standby
     node_type: deploy
-    label: "Deploy to Production"
+    label: "Deploy to Standby"
     config:
       deploy_app_id: "${DEPLOY_APP_ID}"
       deploy_timeout_secs: 300
+      deploy_slot: standby
+      deploy_production_url: "${DEPLOY_PRODUCTION_URL}"
+      deploy_standby_url: "${DEPLOY_STANDBY_URL}"
 
   - key: gate_deploy
     node_type: gate
@@ -220,9 +225,9 @@ nodes:
       gate_field: status
       gate_expect: completed
 
-  - key: judge
+  - key: judge_ab
     node_type: agent
-    label: "Production Judge (Chrome)"
+    label: "A/B Judge (Chrome)"
     config:
       model: sonnet
       effort: high
@@ -230,44 +235,71 @@ nodes:
       chrome: true
       heartbeat_timeout_secs: 300
       system_prompt: |
-        You are an independent judge evaluating whether this sprint's work is
-        visible and working IN PRODUCTION. You are NOT reviewing code — you are
-        an end user testing the deployed application.
+        You are an independent A/B judge comparing the NEW deployment (standby)
+        against the CURRENT live production. You are NOT reviewing code — you are
+        an end user testing both versions side by side.
 
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
         Success criteria: {{epic.success_criteria}}
 
+        {{deploy_output}}
+
         INSTRUCTIONS:
-        1. Open the production URL in Chrome
-        2. Navigate to the relevant pages
-        3. Take screenshots as evidence
-        4. Verify each success criterion against the LIVE application
-        5. Test user interactions (clicks, navigation, forms)
-        6. Check for visual regressions (broken layouts, missing data)
+        1. Open the PRODUCTION URL in Chrome — take a screenshot as baseline
+        2. Open the STANDBY URL in Chrome — take a screenshot of the new version
+        3. Compare both versions visually:
+           - Does the standby version show the sprint's changes?
+           - Are there any visual regressions compared to production?
+           - Does navigation, layout, and interactivity work on standby?
+        4. Verify each success criterion against the STANDBY version
+        5. Test user interactions (clicks, navigation, forms) on standby
+        6. Compare error console between both versions
+
+        DECISION CRITERIA:
+        - If standby is BETTER or EQUAL to production → approve promotion
+        - If standby has regressions vs production → reject promotion
+        - If standby is not reachable → reject promotion
 
         Output ONLY valid JSON:
         {
-          "intent_satisfied": bool,
+          "promote": bool,
           "confidence": 0.0-1.0,
+          "production_status": "healthy|degraded|down",
+          "standby_status": "healthy|degraded|down",
           "criteria_results": [
             {"criterion": "...", "met": bool, "evidence": "what you saw"}
           ],
-          "summary": "Overall assessment",
-          "evidence": ["screenshot descriptions"],
-          "issues_found": ["Any bugs or regressions spotted"]
+          "regressions": ["Any regressions found on standby vs production"],
+          "improvements": ["Improvements visible on standby vs production"],
+          "summary": "Overall A/B comparison assessment",
+          "evidence": ["screenshot descriptions"]
         }
       prompt: |
-        Judge sprint {{sprint.number}} of epic {{epic.code}}.
+        A/B judge sprint {{sprint.number}} of epic {{epic.code}}.
 
-        The code has been deployed to production. Open the app in Chrome and
-        verify that the sprint's changes are live and working correctly.
-        Test as an end user — not as a code reviewer.
+        The code has been deployed to a STANDBY slot (not yet serving traffic).
+        Compare the standby deployment against the live production version.
+        Both should be accessible via their respective URLs.
 
         Ceremony results so far:
         {{ceremony_results_json}}
 
-        Output your verdict as JSON.
+        Output your verdict as JSON. Set "promote": true to approve the swap.
+
+  - key: gate_ab
+    node_type: gate
+    label: "A/B Approved?"
+    config:
+      gate_field: status
+      gate_expect: completed
+
+  - key: promote
+    node_type: promote
+    label: "Promote Standby → Primary"
+    config:
+      deploy_app_id: "${DEPLOY_APP_ID}"
+      deploy_slot: standby
 
   - key: merge_results
     node_type: merge
@@ -352,20 +384,28 @@ edges:
   - source: judge_code
     target: gate_code
   - source: gate_code
-    target: deploy
+    target: deploy_standby
     handle: pass
   - source: gate_code
     target: merge_results
     handle: fail
-  - source: deploy
+  - source: deploy_standby
     target: gate_deploy
   - source: gate_deploy
-    target: judge
+    target: judge_ab
     handle: pass
   - source: gate_deploy
     target: merge_results
     handle: fail
-  - source: judge
+  - source: judge_ab
+    target: gate_ab
+  - source: gate_ab
+    target: promote
+    handle: pass
+  - source: gate_ab
+    target: merge_results
+    handle: fail
+  - source: promote
     target: merge_results
   - source: merge_results
     target: sm_retro

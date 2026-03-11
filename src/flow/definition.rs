@@ -35,6 +35,8 @@ pub enum CeremonyNodeType {
     Output,
     /// Merge worktree to main, push, trigger Connect App Pipeline, wait for deploy.
     Deploy,
+    /// Promote a deployment slot to primary (100% traffic).
+    Promote,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -66,6 +68,12 @@ pub struct CeremonyNodeConfig {
     pub deploy_timeout_secs: Option<u64>,
     /// Deploy node: production URL to verify health after deploy
     pub deploy_health_url: Option<String>,
+    /// Deploy node: deployment slot name (e.g., "standby" for blue-green)
+    pub deploy_slot: Option<String>,
+    /// Deploy/Promote node: production URL for live comparison
+    pub deploy_production_url: Option<String>,
+    /// Deploy node: standby URL for A/B judge comparison
+    pub deploy_standby_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,13 +143,15 @@ mod tests {
     #[test]
     fn default_flow_parses() {
         let flow = CeremonyFlow::default_flow();
-        assert_eq!(flow.nodes.len(), 15); // v2.1: +deploy, gate_deploy, judge_code, gate_code
-        assert_eq!(flow.edges.len(), 19); // v2.1: dual judge + deploy edges
+        assert_eq!(flow.nodes.len(), 17); // v2.2: +promote, gate_ab, judge_ab replaces judge, deploy_standby replaces deploy
+        assert_eq!(flow.edges.len(), 22); // v2.2: A/B judge + promote edges
         assert!(flow.node("research").is_some());
         assert!(flow.node("execute").is_some());
-        assert!(flow.node("deploy").is_some());
+        assert!(flow.node("deploy_standby").is_some());
         assert!(flow.node("gate_deploy").is_some());
-        assert!(flow.node("judge").is_some());
+        assert!(flow.node("judge_ab").is_some());
+        assert!(flow.node("gate_ab").is_some());
+        assert!(flow.node("promote").is_some());
     }
 
     #[test]
