@@ -2,7 +2,7 @@ use clap::Args;
 use serde_json::json;
 
 use super::CliConfig;
-use crate::api_client::{ApiClient, DataWrapper};
+use crate::api_client::ApiClient;
 use crate::flow::{engine, loader};
 use crate::types::*;
 
@@ -43,17 +43,11 @@ pub async fn run(
     let epic_resp: serde_json::Value = client.get(&format!("/v1/epics/{}", sprint.epic_id)).await?;
     let epic: Epic = serde_json::from_value(epic_resp)?;
 
-    // 3. Load product for repo_path
-    let product_resp: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!("/v1/products?id={}", epic.product_id))
+    // 3. Load product for repo_path (direct GET by ID, not query param)
+    let product_resp: serde_json::Value = client
+        .get(&format!("/v1/products/{}", epic.product_id))
         .await?;
-    let product: Product = serde_json::from_value(
-        product_resp
-            .data
-            .first()
-            .ok_or("Product not found")?
-            .clone(),
-    )?;
+    let product: Product = serde_json::from_value(product_resp)?;
 
     // 4. Load ceremony flow
     let config =

@@ -67,13 +67,12 @@ pub async fn run(
         std::fs::remove_file(&lock_path_clone).ok();
     });
 
-    // 1. Look up epic
-    let epics: DataWrapper<Vec<serde_json::Value>> = client
-        .get(&format!("/v1/epics?code={}", args.epic_code))
-        .await?;
-    let epic_data = epics
+    // 1. Look up epic (client-side filter — JSONB tables ignore query params)
+    let all_epics: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
+    let epic_data = all_epics
         .data
-        .first()
+        .iter()
+        .find(|e| e["code"].as_str() == Some(args.epic_code.as_str()))
         .ok_or(format!("Epic {} not found", args.epic_code))?;
     let epic: Epic = serde_json::from_value(epic_data.clone())?;
 
@@ -141,17 +140,24 @@ pub async fn run(
         let sprint_resp: serde_json::Value = client.post("/v1/er_sprints", &sprint_body).await?;
         let sprint_id = sprint_resp["id"].as_str().ok_or("Sprint creation failed")?;
 
-        // Load and assign stories (take up to 5 ready stories)
-        let stories: DataWrapper<Vec<serde_json::Value>> = client
-            .get(&format!("/v1/stories?epic_code={}&status=ready", epic.code))
-            .await?;
+        // Load and assign stories (client-side filter for ready stories in this epic)
+        let all_stories: DataWrapper<Vec<serde_json::Value>> =
+            client.get("/v1/stories").await?;
+        let ready_stories: Vec<&serde_json::Value> = all_stories
+            .data
+            .iter()
+            .filter(|s| {
+                s["epic_code"].as_str() == Some(epic.code.as_str())
+                    && s["status"].as_str() == Some("ready")
+            })
+            .collect();
 
-        if stories.data.is_empty() && sprint_num > 1 {
+        if ready_stories.is_empty() && sprint_num > 1 {
             eprintln!("No ready stories remaining — epic complete.");
             break;
         }
 
-        let batch: Vec<&serde_json::Value> = stories.data.iter().take(5).collect();
+        let batch: Vec<&serde_json::Value> = ready_stories.into_iter().take(5).collect();
         let story_ids: Vec<String> = batch
             .iter()
             .filter_map(|s| s["id"].as_str().map(String::from))
