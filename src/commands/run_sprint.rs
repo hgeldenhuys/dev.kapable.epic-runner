@@ -58,12 +58,13 @@ pub async fn run(
     // 3b. Load previous sprint learnings (feedback loop: retro → next sprint)
     let previous_learnings = load_previous_learnings(client, &epic.code).await;
 
-    // 4. Load ceremony flow
+    // 4. Load ceremony flow (cascade: CLI override → per-epic patched → config → embedded)
     let config =
         crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
     let flow = loader::load_flow(
         args.flow.as_deref(),
         config.as_ref().and_then(|c| c.ceremony_flow_id()),
+        Some(&epic.code),
     )
     .await?;
 

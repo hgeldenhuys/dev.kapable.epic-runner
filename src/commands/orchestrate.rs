@@ -5,6 +5,9 @@ use uuid::Uuid;
 
 use super::CliConfig;
 use crate::api_client::{ApiClient, DataWrapper};
+use crate::flow::loader;
+use crate::flow::patcher;
+use crate::scrum_master::{self, NodeOutcome, SprintHistory};
 use crate::types::*;
 
 #[derive(Args)]
@@ -242,6 +245,8 @@ pub async fn run(
                     "{}",
                     "Sprint failed. Replenishing for next sprint...".yellow()
                 );
+                // SM inter-sprint adaptation: analyze ceremony history, patch flow for next sprint
+                adapt_ceremony_flow(client, &epic.code, sprint_num).await;
             }
             2 => {
                 // Blocked — impediment raised
@@ -273,4 +278,185 @@ pub async fn run(
 
     eprintln!("\nEpic runner finished for {}", epic.code);
     Ok(())
+}
+
+/// Analyze ceremony results across sprints and patch the flow YAML for the next sprint.
+/// This is the SM's inter-sprint adaptation: retro findings → flow patches → saved YAML.
+async fn adapt_ceremony_flow(client: &ApiClient, epic_code: &str, current_sprint: i32) {
+    // 1. Load sprint history from DB (ceremony_log has node results)
+    let history = match load_sprint_history(client, epic_code).await {
+        Some(h) if h.len() >= 2 => h, // Need at least 2 sprints to detect patterns
+        _ => {
+            tracing::debug!("Not enough sprint history for adaptation — skipping");
+            return;
+        }
+    };
+
+    // 2. Load the current ceremony flow (which may already be patched)
+    let current_flow = match loader::load_flow(None, None, Some(epic_code)).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(error = %e, "Could not load current flow for adaptation — skipping");
+            return;
+        }
+    };
+
+    // 3. Ask SM to recommend patches
+    let patches = scrum_master::recommend_flow_patches(&history, &current_flow);
+    if patches.is_empty() {
+        tracing::info!(
+            epic_code,
+            "SM recommends no flow patches — ceremony unchanged"
+        );
+        return;
+    }
+
+    eprintln!(
+        "{} SM recommends {} flow patch(es) for next sprint:",
+        "[adapt]".dimmed(),
+        patches.len()
+    );
+
+    // 4. Apply patches
+    let result = patcher::apply_patches(&current_flow, &patches);
+    for desc in &result.applied {
+        eprintln!("  {} {}", "✓".green(), desc);
+    }
+    for desc in &result.skipped {
+        eprintln!("  {} {}", "⊘".yellow(), desc);
+    }
+
+    if result.applied.is_empty() {
+        tracing::info!("All SM patches were skipped — flow unchanged");
+        return;
+    }
+
+    // 5. Bump flow version to track adaptation
+    let mut patched = result.flow;
+    patched.version = format!("1.1.{}", current_sprint);
+    patched.description = Some(format!(
+        "Adapted after sprint {} based on SM retro findings. Patches: {}",
+        current_sprint,
+        result.applied.join("; ")
+    ));
+
+    // 6. Save patched flow for the next sprint
+    if let Err(e) = loader::save_epic_flow(epic_code, &patched) {
+        tracing::error!(error = %e, "Failed to save patched flow — next sprint will use unpatched flow");
+        return;
+    }
+
+    // 7. Log the adaptation event to the sprint_learnings table (best-effort)
+    let body = json!({
+        "epic_code": epic_code,
+        "sprint_number": current_sprint,
+        "action_items": result.applied,
+        "patterns_to_codify": ["SM adapted ceremony flow between sprints"],
+        "friction_points": [],
+        "saved_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let _: Result<serde_json::Value, _> = client.post("/v1/sprint_learnings", &body).await;
+
+    eprintln!(
+        "{} Ceremony flow adapted — {} nodes in patched flow (v{})",
+        "[adapt]".dimmed(),
+        patched.nodes.len(),
+        patched.version,
+    );
+}
+
+/// Load sprint history from DB ceremony_log entries.
+/// Returns None on any failure. Each sprint's ceremony_log is a JSON array of
+/// `{key, status, cost_usd}` objects written by run_sprint.rs.
+async fn load_sprint_history(client: &ApiClient, epic_code: &str) -> Option<Vec<SprintHistory>> {
+    // Load all sprints for this epic
+    let all_sprints: DataWrapper<Vec<serde_json::Value>> =
+        client.get("/v1/er_sprints").await.ok()?;
+
+    // Load all epics to find the epic_id for this code
+    let all_epics: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await.ok()?;
+    let epic_id = all_epics
+        .data
+        .iter()
+        .find(|e| e["code"].as_str() == Some(epic_code))?
+        .get("id")?
+        .as_str()?;
+
+    // Filter sprints for this epic, sort by number
+    let mut sprints: Vec<&serde_json::Value> = all_sprints
+        .data
+        .iter()
+        .filter(|s| s["epic_id"].as_str() == Some(epic_id))
+        .collect();
+    sprints.sort_by_key(|s| s["number"].as_i64().unwrap_or(0));
+
+    let mut history = Vec::new();
+    for sprint in &sprints {
+        let number = sprint["number"].as_i64().unwrap_or(0) as i32;
+        let ceremony_log = sprint["ceremony_log"].as_array();
+
+        let node_results: Vec<NodeOutcome> = match ceremony_log {
+            Some(log) => log
+                .iter()
+                .map(|entry| NodeOutcome {
+                    key: entry["key"].as_str().unwrap_or("").to_string(),
+                    status: entry["status"].as_str().unwrap_or("").to_string(),
+                    cost_usd: entry["cost_usd"].as_f64(),
+                })
+                .collect(),
+            None => vec![],
+        };
+
+        // Try to load retro from sprint_learnings (best-effort)
+        let retro = load_retro_for_sprint(client, epic_code, number).await;
+
+        history.push(SprintHistory {
+            sprint_number: number,
+            node_results,
+            retro,
+        });
+    }
+
+    Some(history)
+}
+
+/// Load retro output for a specific sprint from sprint_learnings table.
+async fn load_retro_for_sprint(
+    client: &ApiClient,
+    epic_code: &str,
+    sprint_number: i32,
+) -> Option<scrum_master::RetroOutput> {
+    let all: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/sprint_learnings").await.ok()?;
+
+    let learning = all.data.iter().find(|l| {
+        l["epic_code"].as_str() == Some(epic_code)
+            && l["sprint_number"].as_i64() == Some(sprint_number as i64)
+    })?;
+
+    // Reconstruct a minimal RetroOutput from the stored fields
+    let friction_points: Vec<String> = learning["friction_points"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let action_items: Vec<String> = learning["action_items"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(scrum_master::RetroOutput {
+        went_well: vec![],
+        friction_points,
+        action_items,
+        discovered_work: vec![],
+        observations: vec![],
+    })
 }
