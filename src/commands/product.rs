@@ -95,9 +95,37 @@ pub async fn run(
     Ok(())
 }
 
-/// Derive a story prefix from a product slug.
-/// Takes the first letter of each hyphen-separated word, uppercased.
-/// "epic-runner" → "ER", "kapable" → "K", "my-cool-app" → "MCA"
+/// Derives a short story-code prefix from a product slug.
+///
+/// Splits the slug on hyphens, takes the first character of each word,
+/// and uppercases the result. This mirrors common acronym conventions:
+/// `"epic-runner"` → `"ER"`, `"kapable"` → `"K"`, `"my-cool-app"` → `"MCA"`.
+///
+/// An empty or all-separator slug falls back to `"S"` so that story codes
+/// are always valid (e.g. `"S-001"`).
+///
+/// # Algorithm
+///
+/// 1. Split `slug` on `'-'`.
+/// 2. Take the first [`char`] of each non-empty word.
+/// 3. Collect into a [`String`] and call `.to_uppercase()`.
+/// 4. If the result is empty, return `"S"` as a safe fallback.
+///
+/// # Examples
+///
+/// ```
+/// // Two-word slug → two-letter prefix
+/// // derive_prefix("epic-runner") == "ER"
+///
+/// // Single-word slug → single-letter prefix
+/// // derive_prefix("kapable") == "K"
+///
+/// // Three-word slug → three-letter prefix
+/// // derive_prefix("my-cool-app") == "MCA"
+///
+/// // Empty slug → fallback prefix
+/// // derive_prefix("") == "S"
+/// ```
 fn derive_prefix(slug: &str) -> String {
     let prefix: String = slug
         .split('-')
