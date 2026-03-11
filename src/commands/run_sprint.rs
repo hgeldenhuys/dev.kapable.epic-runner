@@ -70,13 +70,16 @@ pub async fn run(
     // Events flow: emit() → mpsc → background task → POST /v1/ceremony_events → WAL → SSE
     let (sink, sink_handle) = EventSink::spawn(client.clone());
 
-    // 6. Update sprint status to executing
-    let _: serde_json::Value = client
-        .patch(
+    // 6. Update sprint status to executing (best-effort — don't abort if DB write fails)
+    if let Err(e) = client
+        .patch::<_, serde_json::Value>(
             &format!("/v1/er_sprints/{}", sprint.id),
             &json!({ "status": "executing", "started_at": chrono::Utc::now().to_rfc3339() }),
         )
-        .await?;
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to update sprint status to executing — continuing");
+    }
 
     // Stream sprint started event
     sink.emit(SprintEvent {
@@ -105,7 +108,22 @@ pub async fn run(
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
-    let results = engine::execute_flow(&flow, &ctx, &sink).await?;
+    let results = match engine::execute_flow(&flow, &ctx, &sink).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "Flow execution failed — exiting with failure");
+            sink.emit(SprintEvent {
+                sprint_id: sprint.session_id,
+                event_type: SprintEventType::Failed,
+                summary: format!("Sprint {} crashed: {}", sprint.number, e),
+                detail: None,
+                timestamp: chrono::Utc::now(),
+            });
+            drop(sink);
+            let _ = sink_handle.await;
+            std::process::exit(1);
+        }
+    };
 
     // 9. Determine outcome
     let judge_verdict = results.iter().find_map(|r| r.judge_verdict.clone());
@@ -162,8 +180,8 @@ pub async fn run(
         })
         .collect();
 
-    let _: serde_json::Value = client
-        .patch(
+    if let Err(e) = client
+        .patch::<_, serde_json::Value>(
             &format!("/v1/er_sprints/{}", sprint.id),
             &json!({
                 "status": final_status,
@@ -171,7 +189,10 @@ pub async fn run(
                 "ceremony_log": ceremony_log,
             }),
         )
-        .await?;
+        .await
+    {
+        tracing::error!(error = %e, "Failed to write sprint results to DB — results lost");
+    }
 
     // 11. Persist supervisor decisions + rubber duck sessions (best-effort)
     for result in &results {

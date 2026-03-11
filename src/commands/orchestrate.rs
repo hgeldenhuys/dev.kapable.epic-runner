@@ -162,12 +162,15 @@ pub async fn run(
             .filter_map(|s| s["id"].as_str().map(String::from))
             .collect();
 
-        let _: serde_json::Value = client
-            .patch(
+        if let Err(e) = client
+            .patch::<_, serde_json::Value>(
                 &format!("/v1/er_sprints/{sprint_id}"),
                 &json!({ "stories": serde_json::to_value(&batch)? }),
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to attach stories to sprint — continuing");
+        }
 
         // Transition stories to planned
         for sid in &story_ids {
@@ -201,12 +204,15 @@ pub async fn run(
             0 => {
                 // Intent satisfied — close epic
                 eprintln!("Intent satisfied — closing epic {}", epic.code);
-                let _: serde_json::Value = client
-                    .patch(
+                if let Err(e) = client
+                    .patch::<_, serde_json::Value>(
                         &format!("/v1/epics/{}", epic.id),
                         &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
                     )
-                    .await?;
+                    .await
+                {
+                    tracing::error!(error = %e, "Failed to close epic in DB");
+                }
                 break;
             }
             1 => {
@@ -216,12 +222,15 @@ pub async fn run(
             2 => {
                 // Blocked — impediment raised
                 eprintln!("Epic {} is BLOCKED by impediment", epic.code);
-                let _: serde_json::Value = client
-                    .patch(
+                if let Err(e) = client
+                    .patch::<_, serde_json::Value>(
                         &format!("/v1/epics/{}", epic.id),
                         &json!({ "status": "blocked" }),
                     )
-                    .await?;
+                    .await
+                {
+                    tracing::error!(error = %e, "Failed to mark epic as blocked in DB");
+                }
                 break;
             }
             _ => {
