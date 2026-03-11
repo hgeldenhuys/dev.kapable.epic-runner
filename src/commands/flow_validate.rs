@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use clap::Args;
+use owo_colors::OwoColorize;
 
 use crate::flow::definition::{CeremonyFlow, CeremonyNodeType};
 
@@ -47,20 +48,19 @@ pub fn run(args: FlowValidateArgs) -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     for f in &findings {
-        let icon = match f.severity {
-            Severity::Error => "ERROR",
-            Severity::Warning => "WARN ",
-        };
-        eprintln!("  [{}] {}", icon, f.message);
+        match f.severity {
+            Severity::Error => eprintln!("  [{}] {}", "ERROR".red().bold(), f.message),
+            Severity::Warning => eprintln!("  [{}] {}", "WARN".yellow(), f.message),
+        }
     }
 
     if findings.is_empty() {
-        eprintln!("  All checks passed.");
+        eprintln!("  {}", "All checks passed.".green().bold());
     } else {
         eprintln!(
             "\n  {} error(s), {} warning(s)",
-            errors.len(),
-            warnings.len()
+            errors.len().to_string().red().bold(),
+            warnings.len().to_string().yellow()
         );
     }
 

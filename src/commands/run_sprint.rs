@@ -1,4 +1,5 @@
 use clap::Args;
+use owo_colors::OwoColorize;
 use serde_json::json;
 
 use super::CliConfig;
@@ -67,11 +68,18 @@ pub async fn run(
     .await?;
 
     eprintln!(
-        "[sprint-run] Sprint {} of epic {}",
-        sprint.number, epic.code
+        "{} Sprint {} of epic {}",
+        "[sprint-run]".dimmed(),
+        sprint.number.to_string().cyan().bold(),
+        epic.code.yellow().bold()
     );
-    eprintln!("[sprint-run] Flow: {} v{}", flow.name, flow.version);
-    eprintln!("[sprint-run] Nodes: {}", flow.nodes.len());
+    eprintln!(
+        "{} Flow: {} v{}",
+        "[sprint-run]".dimmed(),
+        flow.name.bold(),
+        flow.version
+    );
+    eprintln!("{} Nodes: {}", "[sprint-run]".dimmed(), flow.nodes.len());
 
     // 5. Create event sink for real-time DB streaming.
     // Events flow: emit() → mpsc → background task → POST /v1/ceremony_events → WAL → SSE
@@ -230,11 +238,27 @@ pub async fn run(
     let _ = sink_handle.await;
 
     eprintln!();
+    let status_colored = match final_status {
+        "completed" => "completed".green().bold().to_string(),
+        "blocked" => "BLOCKED".red().bold().to_string(),
+        _ => "failed".yellow().bold().to_string(),
+    };
     eprintln!(
-        "[sprint-run] Sprint {} finished: {}",
-        sprint.number, final_status
+        "{} Sprint {} finished: {}",
+        "[sprint-run]".dimmed(),
+        sprint.number,
+        status_colored
     );
-    eprintln!("[sprint-run] Intent satisfied: {}", intent_satisfied);
+    let satisfied_str = if intent_satisfied {
+        "true".green().to_string()
+    } else {
+        "false".red().to_string()
+    };
+    eprintln!(
+        "{} Intent satisfied: {}",
+        "[sprint-run]".dimmed(),
+        satisfied_str
+    );
 
     // Exit with appropriate code for orchestrator to read
     if any_impediment {

@@ -1,4 +1,5 @@
 use clap::Args;
+use owo_colors::OwoColorize;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -95,8 +96,14 @@ pub async fn run(
         .into());
     }
 
-    eprintln!("Epic Runner — Orchestrate {}: {}", epic.code, epic.title);
-    eprintln!("Intent: {}", epic.intent);
+    eprintln!(
+        "{} {} {}: {}",
+        "Epic Runner —".bold(),
+        "Orchestrate".cyan().bold(),
+        epic.code.yellow().bold(),
+        epic.title
+    );
+    eprintln!("Intent: {}", epic.intent.dimmed());
     eprintln!("Max sprints: {}", args.max_sprints);
 
     if args.dry_run {
@@ -109,9 +116,12 @@ pub async fn run(
 
     // 3. Sprint loop
     for sprint_num in 1..=args.max_sprints {
-        eprintln!("\n═══════════════════════════════════════");
-        eprintln!("  SPRINT {sprint_num} of epic {}", epic.code);
-        eprintln!("═══════════════════════════════════════");
+        eprintln!(
+            "\n{}",
+            format!("═══ SPRINT {sprint_num} of epic {} ═══", epic.code)
+                .cyan()
+                .bold()
+        );
 
         // Worktree health check (committee invariant #5)
         let worktree_path = format!(".claude/worktrees/{}", epic.code);
@@ -210,7 +220,11 @@ pub async fn run(
         match exit_code {
             0 => {
                 // Intent satisfied — close epic
-                eprintln!("Intent satisfied — closing epic {}", epic.code);
+                eprintln!(
+                    "{} — closing epic {}",
+                    "Intent satisfied".green().bold(),
+                    epic.code
+                );
                 if let Err(e) = client
                     .patch::<_, serde_json::Value>(
                         &format!("/v1/epics/{}", epic.id),
@@ -224,11 +238,18 @@ pub async fn run(
             }
             1 => {
                 // Failed but not blocked — try next sprint
-                eprintln!("Sprint failed. Replenishing for next sprint...");
+                eprintln!(
+                    "{}",
+                    "Sprint failed. Replenishing for next sprint...".yellow()
+                );
             }
             2 => {
                 // Blocked — impediment raised
-                eprintln!("Epic {} is BLOCKED by impediment", epic.code);
+                eprintln!(
+                    "Epic {} is {} by impediment",
+                    epic.code,
+                    "BLOCKED".red().bold()
+                );
                 if let Err(e) = client
                     .patch::<_, serde_json::Value>(
                         &format!("/v1/epics/{}", epic.id),

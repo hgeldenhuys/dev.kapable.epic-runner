@@ -1,5 +1,6 @@
 use clap::Args;
 use comfy_table::{Cell, Table};
+use owo_colors::OwoColorize;
 
 use super::CliConfig;
 use crate::api_client::{ApiClient, DataWrapper};
@@ -44,12 +45,12 @@ pub async fn run(
         return Ok(());
     }
 
-    eprintln!("═══ Epic Runner Dashboard ═══\n");
+    eprintln!("{}\n", "═══ Epic Runner Dashboard ═══".cyan().bold());
 
     for product in &products {
         let name = product["name"].as_str().unwrap_or("?");
         let pid = product["id"].as_str().unwrap_or("?");
-        eprintln!("Product: {name}");
+        eprintln!("Product: {}", name.bold());
 
         // Filter epics by product_id (client-side)
         let product_epics: Vec<&serde_json::Value> = all_epics

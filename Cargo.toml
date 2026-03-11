@@ -27,6 +27,7 @@ scopeguard = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures = "0.3"
+owo-colors = "4"
 
 [dev-dependencies]
 tempfile = "3"
