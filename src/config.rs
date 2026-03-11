@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct EpicRunnerConfig {
     pub api: Option<ApiSection>,
     pub project: Option<ProjectSection>,
+    pub deploy: Option<DeploySection>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -22,6 +23,20 @@ pub struct ProjectSection {
     pub ceremony_flow_id: Option<String>,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct DeploySection {
+    /// Connect App Pipeline app ID (UUID)
+    pub app_id: Option<String>,
+    /// Admin API key for triggering deploys
+    pub api_key: Option<String>,
+    /// Platform API URL (default: https://api.kapable.dev)
+    pub api_url: Option<String>,
+    /// Deploy timeout in seconds (default: 300)
+    pub timeout_secs: Option<u64>,
+    /// Health check URL to verify after deploy
+    pub health_url: Option<String>,
+}
+
 impl EpicRunnerConfig {
     pub fn api_key(&self) -> Option<&str> {
         self.api.as_ref()?.api_key.as_deref()
@@ -37,6 +52,15 @@ impl EpicRunnerConfig {
     }
     pub fn ceremony_flow_id(&self) -> Option<&str> {
         self.project.as_ref()?.ceremony_flow_id.as_deref()
+    }
+    pub fn deploy_app_id(&self) -> Option<&str> {
+        self.deploy.as_ref()?.app_id.as_deref()
+    }
+    pub fn deploy_api_key(&self) -> Option<&str> {
+        self.deploy.as_ref()?.api_key.as_deref()
+    }
+    pub fn deploy_api_url(&self) -> Option<&str> {
+        self.deploy.as_ref()?.api_url.as_deref()
     }
 }
 

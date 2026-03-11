@@ -584,35 +584,47 @@ async fn execute_deploy_node(
     }
 
     // Step 4: Trigger Connect App Pipeline
-    // Resolve deploy_app_id: config value → env var → error
-    // Config values like "${DEPLOY_APP_ID}" are treated as env var references
-    let app_id = match &c.deploy_app_id {
-        Some(id) if id.starts_with("${") && id.ends_with('}') => {
-            let var_name = &id[2..id.len() - 1];
+    // Resolve deploy settings: YAML node config → project config.toml → env var → default
+    let project_config = crate::config::find_project_config()
+        .and_then(|p| crate::config::read_config(&p).ok());
+
+    // Resolve deploy_app_id with full cascade
+    let resolve_env_ref = |val: &str| -> Option<String> {
+        if val.starts_with("${") && val.ends_with('}') {
+            let var_name = &val[2..val.len() - 1];
             std::env::var(var_name).ok()
+        } else if !val.is_empty() {
+            Some(val.to_string())
+        } else {
+            None
         }
-        Some(id) if !id.is_empty() => Some(id.clone()),
-        _ => None,
-    }
-    .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
+    };
+
+    let app_id = c.deploy_app_id.as_deref().and_then(resolve_env_ref)
+        .or_else(|| project_config.as_ref().and_then(|c| c.deploy_app_id().map(String::from)))
+        .or_else(|| std::env::var("DEPLOY_APP_ID").ok());
 
     let app_id = match app_id {
         Some(id) => id,
         None => {
             return Ok(deploy_failed(
                 node,
-                "deploy_app_id not configured — set DEPLOY_APP_ID env var or deploy_app_id in flow YAML",
+                "deploy_app_id not configured — set in .epic-runner/config.toml [deploy] app_id, DEPLOY_APP_ID env var, or deploy_app_id in flow YAML",
             ));
         }
     };
-    let api_key = c.deploy_api_key.clone().unwrap_or_else(|| {
-        std::env::var("KAPABLE_ADMIN_API_KEY")
-            .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
-    });
-    let api_url = c.deploy_api_url.clone().unwrap_or_else(|| {
-        std::env::var("KAPABLE_API_URL")
-            .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
-    });
+    let api_key = c.deploy_api_key.clone()
+        .or_else(|| project_config.as_ref().and_then(|c| c.deploy_api_key().map(String::from)))
+        .unwrap_or_else(|| {
+            std::env::var("KAPABLE_ADMIN_API_KEY")
+                .unwrap_or_else(|_| "sk_admin_61af775f967c434dbace3877ade456b8".to_string())
+        });
+    let api_url = c.deploy_api_url.clone()
+        .or_else(|| project_config.as_ref().and_then(|c| c.deploy_api_url().map(String::from)))
+        .unwrap_or_else(|| {
+            std::env::var("KAPABLE_API_URL")
+                .unwrap_or_else(|_| "https://api.kapable.dev".to_string())
+        });
     let timeout_secs = c.deploy_timeout_secs.unwrap_or(300);
 
     sink.emit(SprintEvent {
