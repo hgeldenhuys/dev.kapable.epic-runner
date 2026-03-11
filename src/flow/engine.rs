@@ -128,7 +128,8 @@ pub async fn execute_flow(
                     });
 
                     tracing::info!(label = %node.label, key = %node.key, "Executing node");
-                    let result = execute_node(node, ctx, results_ref, &input, sink).await?;
+                    let result =
+                        execute_node(node, ctx, results_ref, &input, &parent_keys, sink).await?;
 
                     // Stream node_completed event to DB
                     sink.emit(SprintEvent {
@@ -223,6 +224,7 @@ async fn execute_node(
     ctx: &FlowContext,
     upstream: &HashMap<String, NodeResult>,
     input: &str,
+    parent_keys: &[String],
     sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
     match node.node_type {
@@ -276,11 +278,12 @@ async fn execute_node(
             let field = node.config.gate_field.as_deref().unwrap_or("status");
             let expect = node.config.gate_expect.as_deref().unwrap_or("completed");
 
-            // Find the most recent upstream result
-            let upstream_status = upstream
-                .values()
-                .filter(|r| r.key != node.key)
-                .last()
+            // Evaluate direct upstream node(s) via reverse adjacency — NOT HashMap::last()
+            // which has non-deterministic iteration order (IMP-835)
+            let upstream_status = parent_keys
+                .iter()
+                .filter_map(|pk| upstream.get(pk))
+                .next_back()
                 .map(|r| match field {
                     "status" => format!("{:?}", r.status).to_lowercase(),
                     "impediment_raised" => r.impediment_raised.to_string(),

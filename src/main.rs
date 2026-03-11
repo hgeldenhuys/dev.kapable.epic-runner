@@ -5,7 +5,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[derive(Parser)]
 #[command(
     name = "epic-runner",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"),
     about = "Epic-scoped autonomous sprint execution"
 )]
 pub struct Cli {
