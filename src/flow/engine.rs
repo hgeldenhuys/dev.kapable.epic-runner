@@ -7,6 +7,23 @@ use crate::executor::{self, ExecutorConfig};
 use crate::supervisor;
 use crate::types::*;
 
+/// Serializable checkpoint for crash recovery.
+/// Saved after each node completes so a crashed sprint-run can resume.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FlowCheckpoint {
+    pub sprint_session_id: String,
+    pub completed_nodes: Vec<CheckpointedNode>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointedNode {
+    pub key: String,
+    pub status: String,
+    pub output: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub impediment_raised: bool,
+}
+
 /// Context passed through the flow during execution.
 pub struct FlowContext {
     pub epic: Epic,
@@ -17,6 +34,8 @@ pub struct FlowContext {
     pub effort_override: Option<String>,
     pub budget_override: Option<f64>,
     pub add_dirs: Vec<String>,
+    /// Learnings from previous sprints (fed back by retro → next sprint)
+    pub previous_learnings: String,
 }
 
 /// Result of executing one node.
@@ -54,10 +73,51 @@ pub async fn execute_flow(
     let mut results: HashMap<String, NodeResult> = HashMap::new();
     let mut skip_set: HashSet<String> = HashSet::new();
 
-    // Kahn's BFS — seed queue with zero-degree nodes
+    // Checkpoint resume: restore completed nodes from previous crash
+    let checkpoint_path = checkpoint_path(&ctx.sprint.session_id.to_string());
+    if let Some(checkpoint) = load_checkpoint(&checkpoint_path) {
+        let restored = checkpoint.completed_nodes.len();
+        for cn in checkpoint.completed_nodes {
+            let status = match cn.status.as_str() {
+                "Completed" => CeremonyStatus::Completed,
+                "Failed" => CeremonyStatus::Failed,
+                "Skipped" => CeremonyStatus::Skipped,
+                _ => CeremonyStatus::Failed,
+            };
+            results.insert(
+                cn.key.clone(),
+                NodeResult {
+                    key: cn.key,
+                    status,
+                    output: cn.output,
+                    cost_usd: cn.cost_usd,
+                    impediment_raised: cn.impediment_raised,
+                    judge_verdict: None,
+                    supervisor_decisions: vec![],
+                    rubber_duck_sessions: vec![],
+                },
+            );
+        }
+        // Recompute in-degrees: already-completed nodes should be treated as processed
+        for key in results.keys() {
+            if let Some(downstream) = adj.get(key) {
+                for (target, _) in downstream {
+                    if let Some(deg) = in_deg.get_mut(target) {
+                        *deg = deg.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        tracing::info!(
+            restored,
+            "Resumed from checkpoint — skipping completed nodes"
+        );
+    }
+
+    // Kahn's BFS — seed queue with zero-degree nodes (that aren't already completed)
     let mut queue: VecDeque<String> = VecDeque::new();
     for (key, deg) in &in_deg {
-        if *deg == 0 {
+        if *deg == 0 && !results.contains_key(key) {
             queue.push_back(key.clone());
         }
     }
@@ -178,6 +238,13 @@ pub async fn execute_flow(
 
             results.insert(key.clone(), result);
 
+            // Checkpoint after each node — enables crash recovery
+            save_checkpoint(
+                &checkpoint_path,
+                &ctx.sprint.session_id.to_string(),
+                &results,
+            );
+
             // Decrement in-degrees of downstream nodes
             if let Some(downstream) = adj.get(key) {
                 for (target, _) in downstream {
@@ -191,6 +258,9 @@ pub async fn execute_flow(
             }
         }
     }
+
+    // Clean up checkpoint on successful completion
+    let _ = std::fs::remove_file(&checkpoint_path);
 
     // Collect results in node definition order
     let ordered: Vec<NodeResult> = flow
@@ -480,6 +550,7 @@ fn interpolate(
         .replace("{{ceremony_results_json}}", &ceremony_results_json)
         .replace("{{supervisor_decisions}}", &supervisor_decisions)
         .replace("{{repo.claude_md}}", &claude_md)
+        .replace("{{previous_learnings}}", &ctx.previous_learnings)
         .replace("{{epic.code}}", &ctx.epic.code)
         .replace("{{epic.title}}", &ctx.epic.title)
         .replace("{{epic.intent}}", &ctx.epic.intent)
@@ -498,4 +569,48 @@ fn interpolate(
             "{{stories}}",
             &serde_json::to_string_pretty(&ctx.stories).unwrap_or_default(),
         )
+}
+
+/// Get the checkpoint file path for a sprint session.
+fn checkpoint_path(session_id: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!(".epic-runner/checkpoints/{}.json", session_id))
+}
+
+/// Load checkpoint from disk (returns None if missing or corrupt).
+fn load_checkpoint(path: &std::path::Path) -> Option<FlowCheckpoint> {
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+/// Save checkpoint to disk (best-effort — don't crash the flow if disk write fails).
+fn save_checkpoint(
+    path: &std::path::Path,
+    session_id: &str,
+    results: &HashMap<String, NodeResult>,
+) {
+    let checkpoint = FlowCheckpoint {
+        sprint_session_id: session_id.to_string(),
+        completed_nodes: results
+            .values()
+            .map(|r| CheckpointedNode {
+                key: r.key.clone(),
+                status: format!("{:?}", r.status),
+                output: r.output.clone(),
+                cost_usd: r.cost_usd,
+                impediment_raised: r.impediment_raised,
+            })
+            .collect(),
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    match serde_json::to_string_pretty(&checkpoint) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, json) {
+                tracing::warn!(error = %e, "Failed to write checkpoint");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "Failed to serialize checkpoint"),
+    }
 }
