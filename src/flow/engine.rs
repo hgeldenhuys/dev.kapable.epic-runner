@@ -638,10 +638,11 @@ async fn execute_deploy_node(
         .send()
         .await;
 
-    let deployment_id = match resp {
+    let pipeline_run_id = match resp {
         Ok(r) if r.status().is_success() => {
             let body: serde_json::Value = r.json().await.unwrap_or_default();
-            body["deployment_id"]
+            // The deploy endpoint returns pipeline_run_id — that's what we poll
+            body["pipeline_run_id"]
                 .as_str()
                 .or_else(|| body["id"].as_str())
                 .map(String::from)
@@ -669,7 +670,7 @@ async fn execute_deploy_node(
             "Waiting for deploy to complete (timeout: {}s)",
             timeout_secs
         ),
-        detail: deployment_id.as_ref().map(|id| serde_json::json!({"deployment_id": id})),
+        detail: pipeline_run_id.as_ref().map(|id| serde_json::json!({"pipeline_run_id": id})),
         timestamp: chrono::Utc::now(),
     });
 
@@ -677,9 +678,9 @@ async fn execute_deploy_node(
     #[allow(unused_assignments)]
     let mut deploy_success = false;
 
-    // If we have a deployment_id, poll its status
-    if let Some(dep_id) = &deployment_id {
-        let status_url = format!("{}/v1/deployments/{}", api_url, dep_id);
+    // If we have a pipeline_run_id, poll its status
+    if let Some(run_id) = &pipeline_run_id {
+        let status_url = format!("{}/v1/pipeline-runs/{}", api_url, run_id);
         loop {
             if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
                 return Ok(deploy_failed(node, "Deploy timed out"));
@@ -697,11 +698,11 @@ async fn execute_deploy_node(
                 if let Ok(body) = r.json::<serde_json::Value>().await {
                     let status = body["status"].as_str().unwrap_or("");
                     match status {
-                        "deployed" | "completed" | "success" => {
+                        "deployed" | "succeeded" | "completed" | "success" => {
                             deploy_success = true;
                             break;
                         }
-                        "failed" | "error" => {
+                        "failed" | "error" | "cancelled" => {
                             let msg = body["error"].as_str().unwrap_or("unknown error");
                             return Ok(deploy_failed(
                                 node,
@@ -709,7 +710,8 @@ async fn execute_deploy_node(
                             ));
                         }
                         _ => {
-                            tracing::debug!(status, "Deploy still in progress...");
+                            let elapsed = start.elapsed().as_secs();
+                            tracing::info!(status, elapsed, "Deploy still in progress...");
                         }
                     }
                 }

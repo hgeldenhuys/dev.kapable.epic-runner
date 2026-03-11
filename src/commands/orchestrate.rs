@@ -161,23 +161,33 @@ pub async fn run(
         let sprint_resp: serde_json::Value = client.post("/v1/er_sprints", &sprint_body).await?;
         let sprint_id = sprint_resp["id"].as_str().ok_or("Sprint creation failed")?;
 
-        // Load and assign stories (client-side filter for ready stories in this epic)
+        // Load and assign stories (client-side filter for eligible stories in this epic)
+        // Priority: ready > planned > draft (most refined first)
         let all_stories: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
-        let ready_stories: Vec<&serde_json::Value> = all_stories
+        let mut eligible_stories: Vec<&serde_json::Value> = all_stories
             .data
             .iter()
             .filter(|s| {
                 s["epic_code"].as_str() == Some(epic.code.as_str())
-                    && s["status"].as_str() == Some("ready")
+                    && matches!(
+                        s["status"].as_str(),
+                        Some("ready" | "planned" | "draft")
+                    )
             })
             .collect();
+        eligible_stories.sort_by_key(|s| match s["status"].as_str() {
+            Some("ready") => 0,
+            Some("planned") => 1,
+            Some("draft") => 2,
+            _ => 3,
+        });
 
-        if ready_stories.is_empty() && sprint_num > 1 {
-            eprintln!("No ready stories remaining — epic complete.");
+        if eligible_stories.is_empty() && sprint_num > 1 {
+            eprintln!("No eligible stories remaining — epic complete.");
             break;
         }
 
-        let batch: Vec<&serde_json::Value> = ready_stories.into_iter().take(5).collect();
+        let batch: Vec<&serde_json::Value> = eligible_stories.into_iter().take(5).collect();
         let story_ids: Vec<String> = batch
             .iter()
             .filter_map(|s| s["id"].as_str().map(String::from))
