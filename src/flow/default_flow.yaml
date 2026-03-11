@@ -129,6 +129,8 @@ nodes:
         - At least one test per new function/handler
         - Commit after each completed story
 
+        {{previous_learnings}}
+
         Rules:
         - Execute autonomously — no confirmations
         - Run tests after EVERY change, not just at the end

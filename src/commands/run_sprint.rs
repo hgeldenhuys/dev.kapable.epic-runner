@@ -54,6 +54,9 @@ pub async fn run(
         .await?;
     let product: Product = serde_json::from_value(product_resp)?;
 
+    // 3b. Load previous sprint learnings (feedback loop: retro → next sprint)
+    let previous_learnings = load_previous_learnings(client, &epic.code).await;
+
     // 4. Load ceremony flow
     let config =
         crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
@@ -110,6 +113,7 @@ pub async fn run(
         effort_override: Some(args.effort.clone()),
         budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
+        previous_learnings,
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
@@ -213,6 +217,12 @@ pub async fn run(
         }
     }
 
+    // 11b. Extract learnings from SM retro and persist to sprint_learnings table
+    // (feedback loop: retro action_items → sprint_learnings → next sprint's {{previous_learnings}})
+    if let Some(retro_result) = results.iter().find(|r| r.key == "sm_retro") {
+        save_sprint_learnings(client, &epic.code, sprint.number, retro_result).await;
+    }
+
     // 12. Flush event sink — drop sender, wait for background writer to finish
     drop(sink);
     let _ = sink_handle.await;
@@ -233,4 +243,113 @@ pub async fn run(
     // exit(0) = success
 
     Ok(())
+}
+
+/// Load learnings from previous sprints of this epic.
+/// Returns a formatted string for injection into the {{previous_learnings}} template variable.
+/// Best-effort: returns empty string on any failure (network, parse, no data).
+async fn load_previous_learnings(client: &ApiClient, epic_code: &str) -> String {
+    use crate::api_client::DataWrapper;
+
+    let resp: Result<DataWrapper<Vec<serde_json::Value>>, _> =
+        client.get("/v1/sprint_learnings").await;
+
+    let learnings = match resp {
+        Ok(wrapper) => wrapper.data,
+        Err(e) => {
+            tracing::debug!(error = %e, "Could not load sprint_learnings — starting fresh");
+            return String::new();
+        }
+    };
+
+    // Client-side filter: match epic_code, sort by sprint_number
+    let mut relevant: Vec<&serde_json::Value> = learnings
+        .iter()
+        .filter(|l| l["epic_code"].as_str() == Some(epic_code))
+        .collect();
+    relevant.sort_by_key(|l| l["sprint_number"].as_i64().unwrap_or(0));
+
+    if relevant.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("Learnings from previous sprints:\n");
+    for learning in &relevant {
+        let sprint_num = learning["sprint_number"].as_i64().unwrap_or(0);
+        if let Some(items) = learning["action_items"].as_array() {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    out.push_str(&format!("- [Sprint {}] {}\n", sprint_num, text));
+                }
+            }
+        }
+        if let Some(patterns) = learning["patterns_to_codify"].as_array() {
+            for p in patterns {
+                if let Some(text) = p.as_str() {
+                    out.push_str(&format!("- [Sprint {} pattern] {}\n", sprint_num, text));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Extract action_items and patterns from SM retro output, persist to sprint_learnings table.
+/// Best-effort — failures are logged but don't abort the sprint.
+async fn save_sprint_learnings(
+    client: &ApiClient,
+    epic_code: &str,
+    sprint_number: i32,
+    retro_result: &crate::flow::engine::NodeResult,
+) {
+    let output = match &retro_result.output {
+        Some(o) => o,
+        None => return,
+    };
+
+    // Parse retro JSON output (may be wrapped in markdown code fences)
+    let json_str = output
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| output.trim().strip_prefix("```"))
+        .unwrap_or(output.trim())
+        .trim_end_matches("```")
+        .trim();
+
+    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "Could not parse retro output as JSON — skipping learnings save");
+            return;
+        }
+    };
+
+    let action_items = parsed["action_items"].clone();
+    let patterns = parsed["patterns_to_codify"].clone();
+    let friction = parsed["friction_points"].clone();
+
+    // Only save if there's something worth remembering
+    if action_items.as_array().is_none_or(|a| a.is_empty())
+        && patterns.as_array().is_none_or(|a| a.is_empty())
+    {
+        tracing::debug!("No action_items or patterns in retro — nothing to save");
+        return;
+    }
+
+    let body = serde_json::json!({
+        "epic_code": epic_code,
+        "sprint_number": sprint_number,
+        "action_items": action_items,
+        "patterns_to_codify": patterns,
+        "friction_points": friction,
+        "saved_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    match client
+        .post::<_, serde_json::Value>("/v1/sprint_learnings", &body)
+        .await
+    {
+        Ok(_) => tracing::info!(epic_code, sprint_number, "Saved sprint learnings to DB"),
+        Err(e) => tracing::warn!(error = %e, "Failed to save sprint learnings — continuing"),
+    }
 }
