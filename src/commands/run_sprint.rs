@@ -219,8 +219,10 @@ pub async fn run(
 
     // 11b. Extract learnings from SM retro and persist to sprint_learnings table
     // (feedback loop: retro action_items → sprint_learnings → next sprint's {{previous_learnings}})
+    // Also auto-create backlog items from discovered_work via agentboard CLI.
     if let Some(retro_result) = results.iter().find(|r| r.key == "sm_retro") {
         save_sprint_learnings(client, &epic.code, sprint.number, retro_result).await;
+        create_backlog_from_retro(&epic.code, sprint.number, retro_result);
     }
 
     // 12. Flush event sink — drop sender, wait for background writer to finish
@@ -351,5 +353,87 @@ async fn save_sprint_learnings(
     {
         Ok(_) => tracing::info!(epic_code, sprint_number, "Saved sprint learnings to DB"),
         Err(e) => tracing::warn!(error = %e, "Failed to save sprint learnings — continuing"),
+    }
+}
+
+/// Auto-create agentboard backlog items from SM retro's discovered_work array.
+/// Uses the agentboard CLI (shells out) so we inherit its config resolution.
+/// Best-effort — failures are logged but don't abort.
+fn create_backlog_from_retro(
+    epic_code: &str,
+    sprint_number: i32,
+    retro_result: &crate::flow::engine::NodeResult,
+) {
+    let output = match &retro_result.output {
+        Some(o) => o,
+        None => return,
+    };
+
+    let json_str = output
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| output.trim().strip_prefix("```"))
+        .unwrap_or(output.trim())
+        .trim_end_matches("```")
+        .trim();
+
+    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let items = match parsed["discovered_work"].as_array() {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => return,
+    };
+
+    let mut created = 0;
+    for item in items {
+        let title = match item.as_str() {
+            Some(t) if !t.is_empty() => t,
+            _ => continue,
+        };
+
+        let description = format!(
+            "Discovered during sprint {} of epic {}. Auto-created by SM retro.",
+            sprint_number, epic_code
+        );
+
+        let result = std::process::Command::new("agentboard")
+            .args([
+                "backlog",
+                "add",
+                "--title",
+                title,
+                "--type",
+                "story",
+                "--description",
+                &description,
+            ])
+            .output();
+
+        match result {
+            Ok(output) if output.status.success() => {
+                created += 1;
+                tracing::debug!(title, "Created backlog item from retro");
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!(title, stderr = %stderr, "Failed to create backlog item");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "agentboard CLI not available — skipping backlog creation");
+                return; // No point trying more if CLI is missing
+            }
+        }
+    }
+
+    if created > 0 {
+        tracing::info!(
+            created,
+            epic_code,
+            sprint_number,
+            "Created backlog items from retro discovered_work"
+        );
     }
 }
