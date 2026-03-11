@@ -107,6 +107,9 @@ pub async fn run(
         epic.title
     );
     eprintln!("Intent: {}", epic.intent.dimmed());
+
+    // Clean up stale sprints from previous crashed runs
+    cleanup_stale_sprints(client, &epic.id.to_string()).await;
     eprintln!("Max sprints: {}", args.max_sprints);
 
     if args.dry_run {
@@ -284,8 +287,21 @@ pub async fn run(
                 // Unexpected exit (crash, context exhaustion, SIGKILL)
                 tracing::warn!(
                     exit_code,
-                    "Sprint process died unexpectedly — continuing to next sprint"
+                    "Sprint process died unexpectedly — marking sprint failed, continuing"
                 );
+                // Mark this sprint as failed so it doesn't stay stuck in executing
+                if let Err(e) = client
+                    .patch::<_, serde_json::Value>(
+                        &format!("/v1/er_sprints/{sprint_id}"),
+                        &json!({
+                            "status": "failed",
+                            "finished_at": chrono::Utc::now().to_rfc3339(),
+                        }),
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, "Failed to mark crashed sprint as failed");
+                }
             }
         }
     }
@@ -570,4 +586,61 @@ async fn load_retro_for_sprint(
         discovered_work: vec![],
         observations: vec![],
     })
+}
+
+/// Clean up stale sprints from previous crashed orchestrator runs.
+/// Any sprint in "executing" or "planning" status with no active process is marked "failed".
+async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
+    let all_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> =
+        client.get("/v1/er_sprints").await;
+    let sprints = match all_sprints {
+        Ok(d) => d.data,
+        Err(_) => return,
+    };
+
+    let mut cleaned = 0;
+    for sprint in &sprints {
+        if sprint["epic_id"].as_str() != Some(epic_id) {
+            continue;
+        }
+        let status = sprint["status"].as_str().unwrap_or("");
+        if status != "executing" && status != "planning" {
+            continue;
+        }
+        // This sprint is stuck — mark it as failed
+        let sprint_id = match sprint["id"].as_str() {
+            Some(id) => id,
+            None => continue,
+        };
+        let number = sprint["number"].as_i64().unwrap_or(0);
+
+        if let Err(e) = client
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/er_sprints/{sprint_id}"),
+                &json!({
+                    "status": "failed",
+                    "finished_at": chrono::Utc::now().to_rfc3339(),
+                }),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, sprint_id, "Failed to clean up stale sprint");
+        } else {
+            cleaned += 1;
+            eprintln!(
+                "{} Cleaned up stale sprint {} (was {})",
+                "[cleanup]".dimmed(),
+                format!("#{number}").yellow(),
+                status.red(),
+            );
+        }
+    }
+
+    if cleaned > 0 {
+        eprintln!(
+            "{} Marked {} stale sprint(s) as failed",
+            "[cleanup]".dimmed(),
+            cleaned,
+        );
+    }
 }
