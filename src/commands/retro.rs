@@ -3,6 +3,7 @@ use clap::Args;
 use super::CliConfig;
 use crate::api_client::ApiClient;
 use crate::executor::{self, ExecutorConfig};
+use crate::types::SprintEvent;
 
 #[derive(Args)]
 pub struct RetroArgs {
@@ -60,7 +61,7 @@ pub async fn run(
     };
 
     eprintln!("Running retrospective for sprint {}...", args.sprint_id);
-    let result = executor::execute(config, |e| {
+    let result = executor::execute(config, &|e: SprintEvent| {
         eprintln!("[retro/{}] {}", e.event_type_str(), e.summary);
     })
     .await?;

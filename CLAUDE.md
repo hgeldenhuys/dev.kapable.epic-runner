@@ -6,9 +6,13 @@ Rust CLI for epic-scoped autonomous sprint execution on the Kapable platform.
 
 **Dual-mode binary:**
 - `epic-runner orchestrate <EPIC_CODE>` — thin supervisor: creates sprints, assigns stories, spawns `sprint-run` as child process, reads exit codes
-- `epic-runner sprint-run <SPRINT_ID>` — fat executor: loads ceremony YAML DAG, executes nodes via Kahn's BFS, dispatches Claude headless, writes results to DB
+- `epic-runner sprint-run <SPRINT_ID>` — fat executor: loads ceremony YAML DAG, executes nodes via Kahn's BFS, dispatches Claude headless, streams events to DB in real-time
 
 **Ceremony-as-data:** Sprint ceremonies are defined in YAML DAGs (`src/flow/default_flow.yaml`), not hardcoded Rust. The flow engine supports 7 node types: Source, Harness, Agent, Gate, Loop, Merge, Output.
+
+**Parallel execution:** Same-level nodes in Kahn's BFS execute concurrently via `futures::future::join_all`. Gate skip propagation and in-degree updates happen after each level completes.
+
+**Real-time streaming:** `EventSink` (mpsc channel → background POST to `/v1/ceremony_events`) bridges sync executor callbacks to async DB writes. Platform WAL→SSE auto-delivers events to any observer.
 
 ## Project Structure
 
@@ -16,7 +20,8 @@ Rust CLI for epic-scoped autonomous sprint execution on the Kapable platform.
 src/
   main.rs              # CLI entry (clap derive)
   lib.rs               # Library crate (all modules)
-  api_client.rs        # Kapable Data API client (x-api-key auth)
+  api_client.rs        # Kapable Data API client (x-api-key auth, Clone)
+  event_sink.rs        # Real-time ceremony event streaming (mpsc → DB)
   config.rs            # TOML config with project walk
   types.rs             # Domain types (Epic, Sprint, Story, etc.)
   executor.rs          # Claude Code subprocess dispatch
@@ -84,7 +89,7 @@ cargo build --release
 
 Uses Kapable Data API with `x-api-key` header. **Key-scoped routing** — the API key determines which project's data you access. All routes are `/v1/{table_name}`, NOT `/v1/data/{project_id}/...`.
 
-Tables provisioned by `epic-runner init`: products, stories, epics, **er_sprints** (not `sprints` — platform route collision with agentboard), impediments, supervisor_decisions, rubber_duck_sessions.
+Tables provisioned by `epic-runner init`: products, stories, epics, **er_sprints** (not `sprints` — platform route collision with agentboard), impediments, supervisor_decisions, rubber_duck_sessions, **ceremony_events** (real-time streaming via WAL→SSE).
 
 **Response shapes:**
 - `GET /v1/{table}` (list) → `{"data": [...], "pagination": {...}}` — use `DataWrapper<Vec<Value>>`

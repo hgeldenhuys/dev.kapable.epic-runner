@@ -8,6 +8,7 @@ pub struct DataWrapper<T> {
     pub data: T,
 }
 
+#[derive(Clone)]
 pub struct ApiClient {
     client: Client,
     pub base_url: String,
@@ -219,8 +220,7 @@ impl ApiClient {
             return Ok(prefix.to_string());
         }
 
-        let resp: DataWrapper<Vec<serde_json::Value>> =
-            self.get(&format!("/v1/{table}")).await?;
+        let resp: DataWrapper<Vec<serde_json::Value>> = self.get(&format!("/v1/{table}")).await?;
         let matches: Vec<&str> = resp
             .data
             .iter()

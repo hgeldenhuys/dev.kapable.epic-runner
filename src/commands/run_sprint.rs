@@ -3,6 +3,7 @@ use serde_json::json;
 
 use super::CliConfig;
 use crate::api_client::ApiClient;
+use crate::event_sink::EventSink;
 use crate::flow::{engine, loader};
 use crate::types::*;
 
@@ -65,7 +66,11 @@ pub async fn run(
     eprintln!("[sprint-run] Flow: {} v{}", flow.name, flow.version);
     eprintln!("[sprint-run] Nodes: {}", flow.nodes.len());
 
-    // 5. Update sprint status to executing
+    // 5. Create event sink for real-time DB streaming.
+    // Events flow: emit() → mpsc → background task → POST /v1/ceremony_events → WAL → SSE
+    let (sink, sink_handle) = EventSink::spawn(client.clone());
+
+    // 6. Update sprint status to executing
     let _: serde_json::Value = client
         .patch(
             &format!("/v1/er_sprints/{}", sprint.id),
@@ -73,7 +78,21 @@ pub async fn run(
         )
         .await?;
 
-    // 6. Build flow context
+    // Stream sprint started event
+    sink.emit(SprintEvent {
+        sprint_id: sprint.session_id,
+        event_type: SprintEventType::Started,
+        summary: format!("Sprint {} started for epic {}", sprint.number, epic.code),
+        detail: Some(json!({
+            "flow": flow.name,
+            "flow_version": flow.version,
+            "nodes": flow.nodes.len(),
+            "epic_code": epic.code,
+        })),
+        timestamp: chrono::Utc::now(),
+    });
+
+    // 7. Build flow context
     let stories = sprint.stories.clone().unwrap_or(json!([]));
     let ctx = engine::FlowContext {
         epic: epic.clone(),
@@ -85,10 +104,10 @@ pub async fn run(
         add_dirs: args.add_dir.clone(),
     };
 
-    // 7. Execute the ceremony flow
-    let results = engine::execute_flow(&flow, &ctx).await?;
+    // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
+    let results = engine::execute_flow(&flow, &ctx, &sink).await?;
 
-    // 8. Determine outcome
+    // 9. Determine outcome
     let judge_verdict = results.iter().find_map(|r| r.judge_verdict.clone());
     let any_impediment = results.iter().any(|r| r.impediment_raised);
 
@@ -114,7 +133,24 @@ pub async fn run(
         "failed"
     };
 
-    // 9. Write results to DB
+    // Stream sprint finished event
+    sink.emit(SprintEvent {
+        sprint_id: sprint.session_id,
+        event_type: if intent_satisfied {
+            SprintEventType::Completed
+        } else {
+            SprintEventType::Failed
+        },
+        summary: format!("Sprint {} finished: {}", sprint.number, final_status),
+        detail: Some(json!({
+            "intent_satisfied": intent_satisfied,
+            "impediment": any_impediment,
+            "total_cost_usd": results.iter().filter_map(|r| r.cost_usd).sum::<f64>(),
+        })),
+        timestamp: chrono::Utc::now(),
+    });
+
+    // 10. Write results to DB
     let ceremony_log: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
@@ -137,7 +173,7 @@ pub async fn run(
         )
         .await?;
 
-    // 10. Persist supervisor decisions + rubber duck sessions (best-effort)
+    // 11. Persist supervisor decisions + rubber duck sessions (best-effort)
     for result in &results {
         for decision in &result.supervisor_decisions {
             let _: Result<serde_json::Value, _> = client
@@ -150,6 +186,10 @@ pub async fn run(
                 .await;
         }
     }
+
+    // 12. Flush event sink — drop sender, wait for background writer to finish
+    drop(sink);
+    let _ = sink_handle.await;
 
     eprintln!();
     eprintln!(

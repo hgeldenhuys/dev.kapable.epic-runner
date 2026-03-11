@@ -80,7 +80,7 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
 
 pub async fn execute(
     config: ExecutorConfig,
-    event_callback: impl Fn(SprintEvent) + Send,
+    event_callback: &(impl Fn(SprintEvent) + Send + Sync),
 ) -> Result<ExecutorResult, Box<dyn std::error::Error>> {
     let mut cmd = build_command(&config);
     cmd.kill_on_drop(true);

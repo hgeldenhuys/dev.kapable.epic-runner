@@ -232,6 +232,8 @@ pub struct SprintEvent {
 #[serde(rename_all = "snake_case")]
 pub enum SprintEventType {
     Started,
+    NodeStarted,
+    NodeCompleted,
     CeremonyStarted,
     CeremonyCompleted,
     StopHookFired,
@@ -250,6 +252,8 @@ impl SprintEvent {
     pub fn event_type_str(&self) -> &str {
         match self.event_type {
             SprintEventType::Started => "started",
+            SprintEventType::NodeStarted => "node_started",
+            SprintEventType::NodeCompleted => "node_completed",
             SprintEventType::CeremonyStarted => "ceremony",
             SprintEventType::CeremonyCompleted => "done",
             SprintEventType::StopHookFired => "stop_hook",

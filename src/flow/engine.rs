@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 use super::definition::*;
+use crate::event_sink::EventSink;
 use crate::executor::{self, ExecutorConfig};
 use crate::supervisor;
 use crate::types::*;
@@ -30,25 +31,29 @@ pub struct NodeResult {
     pub rubber_duck_sessions: Vec<RubberDuckSession>,
 }
 
-/// Execute a ceremony flow locally using Kahn's topological sort.
+/// Execute a ceremony flow using Kahn's topological sort with parallel level execution.
 ///
 /// Algorithm:
 /// 1. Compute in-degrees for all nodes
 /// 2. Enqueue all zero-degree nodes (sources)
-/// 3. For each level: execute all ready nodes, collect results
-/// 4. Decrement in-degrees of downstream nodes
-/// 5. Handle gate skipping (fail → skip downstream on "pass" handle)
-/// 6. always_run nodes execute regardless of skip state
+/// 3. For each level: execute all ready nodes IN PARALLEL via join_all
+/// 4. After level completes: process gate skips, insert results, update in-degrees
+/// 5. always_run nodes execute regardless of skip state
+///
+/// The {{input}} template variable resolves to concatenated outputs of direct upstream nodes,
+/// matching the platform Flow editor's piping behavior.
 pub async fn execute_flow(
     flow: &CeremonyFlow,
     ctx: &FlowContext,
+    sink: &EventSink,
 ) -> Result<Vec<NodeResult>, Box<dyn std::error::Error>> {
     let adj = flow.adjacency();
+    let rev_adj = flow.reverse_adjacency();
     let mut in_deg = flow.in_degrees();
     let mut results: HashMap<String, NodeResult> = HashMap::new();
     let mut skip_set: HashSet<String> = HashSet::new();
 
-    // Kahn's BFS
+    // Kahn's BFS — seed queue with zero-degree nodes
     let mut queue: VecDeque<String> = VecDeque::new();
     for (key, deg) in &in_deg {
         if *deg == 0 {
@@ -60,41 +65,110 @@ pub async fn execute_flow(
         let level_size = queue.len();
         let level_keys: Vec<String> = queue.drain(..level_size).collect();
 
-        for key in &level_keys {
-            let node = match flow.node(key) {
-                Some(n) => n,
-                None => continue,
-            };
+        // Take shared references for the async blocks (references are Copy, so
+        // async move can capture them without moving the owned HashMap/sets)
+        let results_ref = &results;
+        let skip_ref = &skip_set;
 
-            let should_skip = skip_set.contains(key) && !node.always_run;
-            let result = if should_skip {
-                NodeResult {
-                    key: key.clone(),
-                    status: CeremonyStatus::Skipped,
-                    output: None,
-                    cost_usd: None,
-                    impediment_raised: false,
-                    judge_verdict: None,
-                    supervisor_decisions: vec![],
-                    rubber_duck_sessions: vec![],
-                }
-            } else {
-                tracing::info!(label = %node.label, key = %node.key, "Executing node");
-                execute_node(node, ctx, &results).await?
-            };
+        // Build futures for all nodes in this BFS level
+        let futures: Vec<_> = level_keys
+            .iter()
+            .map(|key| {
+                let node = flow.node(key);
+                let should_skip = skip_ref.contains(key);
 
-            // Handle gate skipping
-            if node.node_type == CeremonyNodeType::Gate {
-                let gate_passed = result.status == CeremonyStatus::Completed;
-                if let Some(downstream) = adj.get(key) {
-                    for (target, handle) in downstream {
-                        let is_pass_edge = handle.as_deref() == Some("pass");
-                        let is_fail_edge = handle.as_deref() == Some("fail");
-                        if !gate_passed && is_pass_edge {
-                            propagate_skip(&adj, target, &mut skip_set);
+                // Compute {{input}} — concatenated outputs of direct upstream nodes
+                let parent_keys = rev_adj.get(key).cloned().unwrap_or_default();
+                let input: String = parent_keys
+                    .iter()
+                    .filter_map(|pk| results_ref.get(pk)?.output.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+
+                async move {
+                    let node = match node {
+                        Some(n) => n,
+                        None => {
+                            return Ok::<_, Box<dyn std::error::Error>>(NodeResult {
+                                key: key.clone(),
+                                status: CeremonyStatus::Skipped,
+                                output: None,
+                                cost_usd: None,
+                                impediment_raised: false,
+                                judge_verdict: None,
+                                supervisor_decisions: vec![],
+                                rubber_duck_sessions: vec![],
+                            })
                         }
-                        if gate_passed && is_fail_edge {
-                            propagate_skip(&adj, target, &mut skip_set);
+                    };
+
+                    if should_skip && !node.always_run {
+                        return Ok(NodeResult {
+                            key: key.clone(),
+                            status: CeremonyStatus::Skipped,
+                            output: None,
+                            cost_usd: None,
+                            impediment_raised: false,
+                            judge_verdict: None,
+                            supervisor_decisions: vec![],
+                            rubber_duck_sessions: vec![],
+                        });
+                    }
+
+                    // Stream node_started event to DB
+                    sink.emit(SprintEvent {
+                        sprint_id: ctx.sprint.session_id,
+                        event_type: SprintEventType::NodeStarted,
+                        summary: format!("{} ({})", node.label, node.key),
+                        detail: Some(serde_json::json!({
+                            "node_key": node.key,
+                            "node_type": format!("{:?}", node.node_type),
+                        })),
+                        timestamp: chrono::Utc::now(),
+                    });
+
+                    tracing::info!(label = %node.label, key = %node.key, "Executing node");
+                    let result = execute_node(node, ctx, results_ref, &input, sink).await?;
+
+                    // Stream node_completed event to DB
+                    sink.emit(SprintEvent {
+                        sprint_id: ctx.sprint.session_id,
+                        event_type: SprintEventType::NodeCompleted,
+                        summary: format!("{} → {:?}", node.label, result.status),
+                        detail: Some(serde_json::json!({
+                            "node_key": node.key,
+                            "status": format!("{:?}", result.status),
+                            "cost_usd": result.cost_usd,
+                        })),
+                        timestamp: chrono::Utc::now(),
+                    });
+
+                    Ok(result)
+                }
+            })
+            .collect();
+
+        // Execute all nodes in this level CONCURRENTLY
+        let level_results = futures::future::join_all(futures).await;
+
+        // Post-process: gate skipping, insert results, update in-degrees
+        for (key, result) in level_keys.iter().zip(level_results) {
+            let result = result?;
+
+            // Handle gate skip propagation AFTER all parallel nodes complete
+            if let Some(node) = flow.node(key) {
+                if node.node_type == CeremonyNodeType::Gate {
+                    let gate_passed = result.status == CeremonyStatus::Completed;
+                    if let Some(downstream) = adj.get(key) {
+                        for (target, handle) in downstream {
+                            let is_pass_edge = handle.as_deref() == Some("pass");
+                            let is_fail_edge = handle.as_deref() == Some("fail");
+                            if !gate_passed && is_pass_edge {
+                                propagate_skip(&adj, target, &mut skip_set);
+                            }
+                            if gate_passed && is_fail_edge {
+                                propagate_skip(&adj, target, &mut skip_set);
+                            }
                         }
                     }
                 }
@@ -116,7 +190,7 @@ pub async fn execute_flow(
         }
     }
 
-    // Collect results in node order
+    // Collect results in node definition order
     let ordered: Vec<NodeResult> = flow
         .nodes
         .iter()
@@ -148,6 +222,8 @@ async fn execute_node(
     node: &CeremonyNode,
     ctx: &FlowContext,
     upstream: &HashMap<String, NodeResult>,
+    input: &str,
+    sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
     match node.node_type {
         CeremonyNodeType::Source => Ok(NodeResult {
@@ -162,11 +238,14 @@ async fn execute_node(
         }),
 
         CeremonyNodeType::Harness | CeremonyNodeType::Agent => {
-            let config = build_executor_config(node, ctx);
-            let result = executor::execute(config, |e| {
-                tracing::debug!(key = %node.key, event = e.event_type_str(), summary = %e.summary, "Agent event");
-            })
-            .await?;
+            let config = build_executor_config(node, ctx, input, upstream);
+            let node_key = node.key.clone();
+            let sink_clone = sink.clone();
+            let callback = move |e: SprintEvent| {
+                tracing::debug!(key = %node_key, event = e.event_type_str(), summary = %e.summary, "Agent event");
+                sink_clone.emit(e);
+            };
+            let result = executor::execute(config, &callback).await?;
 
             let status = if result.exit_code == 0 {
                 CeremonyStatus::Completed
@@ -235,17 +314,20 @@ async fn execute_node(
         }
 
         CeremonyNodeType::Loop => {
-            let exec_config = build_executor_config(node, ctx);
+            let exec_config = build_executor_config(node, ctx, input, upstream);
             let sup_config = supervisor::SupervisorConfig {
                 max_stop_hooks: node.config.loop_max.unwrap_or(5),
                 rubber_duck_after: node.config.rubber_duck_after.unwrap_or(2),
                 auto_abort_on_same_error: true,
             };
 
-            let supervised = supervisor::supervise(exec_config, sup_config, |e| {
-                tracing::debug!(event = e.event_type_str(), summary = %e.summary, "Supervised event");
-            })
-            .await?;
+            let node_key = node.key.clone();
+            let sink_clone = sink.clone();
+            let callback = move |e: SprintEvent| {
+                tracing::debug!(key = %node_key, event = e.event_type_str(), summary = %e.summary, "Supervised event");
+                sink_clone.emit(e);
+            };
+            let supervised = supervisor::supervise(exec_config, sup_config, &callback).await?;
 
             let impediment = supervised.impediment_raised.is_some();
             let status = if impediment {
@@ -296,7 +378,12 @@ async fn execute_node(
 }
 
 /// Build an ExecutorConfig from a ceremony node's config + flow context.
-fn build_executor_config(node: &CeremonyNode, ctx: &FlowContext) -> ExecutorConfig {
+fn build_executor_config(
+    node: &CeremonyNode,
+    ctx: &FlowContext,
+    input: &str,
+    all_results: &HashMap<String, NodeResult>,
+) -> ExecutorConfig {
     let c = &node.config;
     ExecutorConfig {
         model: ctx
@@ -317,8 +404,11 @@ fn build_executor_config(node: &CeremonyNode, ctx: &FlowContext) -> ExecutorConf
         },
         repo_path: ctx.repo_path.clone(),
         add_dirs: ctx.add_dirs.clone(),
-        system_prompt: c.system_prompt.as_ref().map(|s| interpolate(s, ctx)),
-        prompt: interpolate(c.prompt.as_deref().unwrap_or(""), ctx),
+        system_prompt: c
+            .system_prompt
+            .as_ref()
+            .map(|s| interpolate(s, ctx, input, all_results)),
+        prompt: interpolate(c.prompt.as_deref().unwrap_or(""), ctx, input, all_results),
         chrome: c.chrome,
         max_budget_usd: c.budget_usd,
         allowed_tools: c.allowed_tools.clone(),
@@ -328,9 +418,36 @@ fn build_executor_config(node: &CeremonyNode, ctx: &FlowContext) -> ExecutorConf
     }
 }
 
-/// Simple template interpolation for {{epic.code}}, {{sprint.number}}, etc.
-fn interpolate(template: &str, ctx: &FlowContext) -> String {
+/// Template interpolation supporting all flow variables:
+/// - {{input}} — concatenated outputs of direct upstream nodes (platform Flow editor compatible)
+/// - {{epic.code}}, {{epic.title}}, {{epic.intent}}, {{epic.success_criteria}}
+/// - {{sprint.number}}, {{stories}}
+/// - {{ceremony_results}} — summary of all node results so far
+/// - {{supervisor_decisions}} — summary of all supervisor decisions so far
+fn interpolate(
+    template: &str,
+    ctx: &FlowContext,
+    input: &str,
+    all_results: &HashMap<String, NodeResult>,
+) -> String {
+    // Build ceremony_results summary for retro node
+    let ceremony_results: String = all_results
+        .values()
+        .map(|r| format!("{}: {:?}", r.key, r.status))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let supervisor_decisions: String = all_results
+        .values()
+        .flat_map(|r| r.supervisor_decisions.iter())
+        .map(|d| format!("{:?}: {}", d.decision, d.reasoning))
+        .collect::<Vec<_>>()
+        .join("; ");
+
     template
+        .replace("{{input}}", input)
+        .replace("{{ceremony_results}}", &ceremony_results)
+        .replace("{{supervisor_decisions}}", &supervisor_decisions)
         .replace("{{epic.code}}", &ctx.epic.code)
         .replace("{{epic.title}}", &ctx.epic.title)
         .replace("{{epic.intent}}", &ctx.epic.intent)

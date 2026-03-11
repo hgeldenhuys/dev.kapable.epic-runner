@@ -33,6 +33,7 @@ const TABLES: &[&str] = &[
     "impediments",
     "supervisor_decisions",
     "rubber_duck_sessions",
+    "ceremony_events",
 ];
 
 pub async fn run(

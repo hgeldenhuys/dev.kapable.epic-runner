@@ -95,6 +95,18 @@ impl CeremonyFlow {
         deg
     }
 
+    /// Build reverse adjacency: node_key → [source_keys that feed into it]
+    /// Used to compute {{input}} — the outputs of a node's direct parents.
+    pub fn reverse_adjacency(&self) -> HashMap<String, Vec<String>> {
+        let mut rev: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            rev.entry(edge.target.clone())
+                .or_default()
+                .push(edge.source.clone());
+        }
+        rev
+    }
+
     /// Find a node by key
     pub fn node(&self, key: &str) -> Option<&CeremonyNode> {
         self.nodes.iter().find(|n| n.key == key)

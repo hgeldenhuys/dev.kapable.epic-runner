@@ -3,6 +3,7 @@ use clap::Args;
 use super::CliConfig;
 use crate::api_client::{ApiClient, DataWrapper};
 use crate::executor::{self, ExecutorConfig};
+use crate::types::SprintEvent;
 
 #[derive(Args)]
 pub struct ReviewArgs {
@@ -63,7 +64,7 @@ pub async fn run(
     };
 
     eprintln!("Running business review for epic {}...", args.epic_code);
-    let result = executor::execute(config, |e| {
+    let result = executor::execute(config, &|e: SprintEvent| {
         eprintln!("[review/{}] {}", e.event_type_str(), e.summary);
     })
     .await?;

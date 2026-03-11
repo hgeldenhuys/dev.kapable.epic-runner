@@ -26,7 +26,7 @@ pub struct SupervisedResult {
 pub async fn supervise(
     config: ExecutorConfig,
     sup_config: SupervisorConfig,
-    event_callback: impl Fn(SprintEvent) + Send + Copy,
+    event_callback: &(impl Fn(SprintEvent) + Send + Sync),
 ) -> Result<SupervisedResult, Box<dyn std::error::Error>> {
     let mut decisions = Vec::new();
     let mut rubber_duck_sessions = Vec::new();
@@ -222,7 +222,7 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
         heartbeat_timeout_secs: 120,
     };
 
-    match executor::execute(duck_config, |_| {}).await {
+    match executor::execute(duck_config, &|_| {}).await {
         Ok(duck_result) => Some(RubberDuckSession {
             sprint_id: result.session_id,
             trigger_reason: "Stop hook threshold reached".to_string(),

@@ -1,6 +1,7 @@
 pub mod api_client;
 pub mod commands;
 pub mod config;
+pub mod event_sink;
 pub mod executor;
 pub mod flow;
 pub mod impediments;
