@@ -1,8 +1,9 @@
 name: "Default Sprint Ceremony"
-version: "1.0.0"
+version: "1.1.0"
 description: |
   Standard ceremony sequence: research → groom → execute (supervised) → judge → SM retro.
   Gates short-circuit on failure. SM retro always runs.
+  Cost tracking disabled — will be re-enabled with production billing.
 
 nodes:
   - key: source
@@ -16,7 +17,6 @@ nodes:
     config:
       model: sonnet
       effort: high
-      budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
       allowed_tools:
@@ -49,7 +49,6 @@ nodes:
     config:
       model: sonnet
       effort: high
-      budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
       system_prompt: |
@@ -76,7 +75,6 @@ nodes:
     config:
       model: opus
       effort: max
-      budget_usd: 10.0
       chrome: true
       heartbeat_timeout_secs: 300
       loop_max: 5
@@ -108,7 +106,6 @@ nodes:
     config:
       model: sonnet
       effort: high
-      budget_usd: 3.0
       chrome: true
       heartbeat_timeout_secs: 300
       system_prompt: |
@@ -135,7 +132,6 @@ nodes:
     config:
       model: sonnet
       effort: high
-      budget_usd: 2.0
       chrome: false
       heartbeat_timeout_secs: 180
       system_prompt: |

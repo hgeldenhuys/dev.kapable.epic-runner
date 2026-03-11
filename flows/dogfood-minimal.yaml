@@ -1,0 +1,46 @@
+name: "Dogfood Minimal"
+version: "0.1.0"
+description: |
+  Minimal ceremony for dogfooding: source → execute → output.
+  No research, groom, judge, or retro. Just proves the pipeline works.
+
+nodes:
+  - key: source
+    node_type: source
+    label: "Epic Context"
+    config: {}
+
+  - key: execute
+    node_type: harness
+    label: "Execute Story"
+    config:
+      model: sonnet
+      effort: high
+      # budget_usd: disabled until cost tracking is production-ready
+      chrome: false
+      heartbeat_timeout_secs: 300
+      system_prompt: |
+        You are a developer executing a story for epic {{epic.code}}.
+        Epic: {{epic.title}}
+        Intent: {{epic.intent}}
+        Stories: {{stories}}
+        Rules:
+        - Implement the story fully
+        - Run cargo clippy and cargo test
+        - Commit your changes
+        - Be concise — this is a small task
+      prompt: |
+        Execute the ready stories for epic {{epic.code}}:
+        {{stories}}
+        Implement, test, and commit. Report what you did.
+
+  - key: output
+    node_type: output
+    label: "Sprint Result"
+    config: {}
+
+edges:
+  - source: source
+    target: execute
+  - source: execute
+    target: output

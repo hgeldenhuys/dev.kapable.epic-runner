@@ -60,9 +60,11 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     for dir in &config.add_dirs {
         cmd.arg("--add-dir").arg(dir);
     }
-    if let Some(budget) = config.max_budget_usd {
-        cmd.arg("--max-budget-usd").arg(budget.to_string());
-    }
+    // Budget enforcement disabled — will be re-enabled when we have
+    // production cost tracking. For now, let ceremonies run uncapped.
+    // if let Some(budget) = config.max_budget_usd {
+    //     cmd.arg("--max-budget-usd").arg(budget.to_string());
+    // }
     if let Some(tools) = &config.allowed_tools {
         cmd.arg("--allowed-tools").arg(tools.join(","));
     }

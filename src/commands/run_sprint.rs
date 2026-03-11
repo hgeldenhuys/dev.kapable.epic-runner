@@ -90,9 +90,21 @@ pub async fn run(
 
     // 8. Determine outcome
     let judge_verdict = results.iter().find_map(|r| r.judge_verdict.clone());
-    let intent_satisfied = crate::judge::evaluate_verdict(&judge_verdict);
     let any_impediment = results.iter().any(|r| r.impediment_raised);
-    let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
+
+    // Intent evaluation: if a judge ran, use its verdict.
+    // If no judge ran (e.g. minimal flow), consider it satisfied if
+    // all non-skipped nodes completed successfully.
+    let intent_satisfied = if judge_verdict.is_some() {
+        crate::judge::evaluate_verdict(&judge_verdict)
+    } else {
+        results.iter().all(|r| {
+            matches!(
+                r.status,
+                crate::types::CeremonyStatus::Completed | crate::types::CeremonyStatus::Skipped
+            )
+        })
+    };
 
     let final_status = if any_impediment {
         "blocked"
@@ -145,7 +157,6 @@ pub async fn run(
         sprint.number, final_status
     );
     eprintln!("[sprint-run] Intent satisfied: {}", intent_satisfied);
-    eprintln!("[sprint-run] Total cost: ${:.2}", total_cost);
 
     // Exit with appropriate code for orchestrator to read
     if any_impediment {
