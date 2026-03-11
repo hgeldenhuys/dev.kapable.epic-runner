@@ -66,12 +66,17 @@ pub async fn run(
             let product_id = product_data["id"].as_str().ok_or("Product has no id")?;
 
             // Determine instance number (count existing epics in this domain)
-            let existing: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!(
-                    "/v1/epics?product_id={product_id}&domain={domain}"
-                ))
+            // Note: JSONB Data API may not filter on arbitrary fields, so we
+            // fetch all epics for this product and post-filter by domain.
+            let all_epics: DataWrapper<Vec<serde_json::Value>> = client
+                .get(&format!("/v1/epics?product_id={product_id}"))
                 .await?;
-            let instance = existing.data.len() as i32 + 1;
+            let domain_count = all_epics
+                .data
+                .iter()
+                .filter(|e| e["domain"].as_str() == Some(&domain))
+                .count();
+            let instance = domain_count as i32 + 1;
             let code = format!("{}-{:03}", domain.to_uppercase(), instance);
             let worktree_name = code.clone();
 
@@ -101,26 +106,45 @@ pub async fn run(
             }
         }
         EpicAction::List { product, status } => {
-            let mut query = "/v1/epics?".to_string();
-            if let Some(s) = &status {
-                query.push_str(&format!("status={s}&"));
-            }
-            if let Some(p) = &product {
+            // Resolve product slug to ID for filtering
+            let product_id = if let Some(p) = &product {
                 let products: DataWrapper<Vec<serde_json::Value>> =
-                    client.get(&format!("/v1/products?slug={p}")).await?;
-                if let Some(pid) = products.data.first().and_then(|p| p["id"].as_str()) {
-                    query.push_str(&format!("product_id={pid}&"));
-                }
-            }
+                    client.get("/v1/products").await?;
+                products
+                    .data
+                    .iter()
+                    .find(|row| row["slug"].as_str() == Some(p.as_str()))
+                    .and_then(|row| row["id"].as_str().map(String::from))
+            } else {
+                None
+            };
 
-            let resp: DataWrapper<Vec<serde_json::Value>> = client.get(&query).await?;
+            let resp: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
+            let filtered: Vec<&serde_json::Value> = resp
+                .data
+                .iter()
+                .filter(|row| {
+                    if let Some(pid) = &product_id {
+                        if row["product_id"].as_str() != Some(pid.as_str()) {
+                            return false;
+                        }
+                    }
+                    if let Some(s) = &status {
+                        if row["status"].as_str() != Some(s.as_str()) {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .collect();
+
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&resp.data)?);
+                println!("{}", serde_json::to_string_pretty(&filtered)?);
             } else {
                 let mut table = Table::new();
                 table.set_header(vec!["Code", "Title", "Status", "Intent"]);
-                for row in &resp.data {
-                    let e: Epic = serde_json::from_value(row.clone())?;
+                for row in &filtered {
+                    let e: Epic = serde_json::from_value((*row).clone())?;
                     table.add_row(vec![
                         Cell::new(&e.code),
                         Cell::new(truncate(&e.title, 30)),
@@ -129,37 +153,22 @@ pub async fn run(
                     ]);
                 }
                 println!("{table}");
-                eprintln!("{} epics", resp.data.len());
+                eprintln!("{} epics", filtered.len());
             }
         }
         EpicAction::Show { code } => {
-            let resp: DataWrapper<Vec<serde_json::Value>> =
-                client.get(&format!("/v1/epics?code={code}")).await?;
-            let epic = resp
-                .data
-                .first()
-                .ok_or(format!("Epic '{code}' not found"))?;
-            println!("{}", serde_json::to_string_pretty(epic)?);
+            let epic = find_epic_by_code(client, &code).await?;
+            println!("{}", serde_json::to_string_pretty(&epic)?);
         }
         EpicAction::Close { code } => {
-            let resp: DataWrapper<Vec<serde_json::Value>> =
-                client.get(&format!("/v1/epics?code={code}")).await?;
-            let epic = resp
-                .data
-                .first()
-                .ok_or(format!("Epic '{code}' not found"))?;
+            let epic = find_epic_by_code(client, &code).await?;
             let id = epic["id"].as_str().ok_or("Epic has no id")?;
             let body = json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() });
             let _: serde_json::Value = client.patch(&format!("/v1/epics/{id}"), &body).await?;
             eprintln!("Epic {code} closed");
         }
         EpicAction::Abandon { code } => {
-            let resp: DataWrapper<Vec<serde_json::Value>> =
-                client.get(&format!("/v1/epics?code={code}")).await?;
-            let epic = resp
-                .data
-                .first()
-                .ok_or(format!("Epic '{code}' not found"))?;
+            let epic = find_epic_by_code(client, &code).await?;
             let id = epic["id"].as_str().ok_or("Epic has no id")?;
             let body = json!({ "status": "abandoned" });
             let _: serde_json::Value = client.patch(&format!("/v1/epics/{id}"), &body).await?;
@@ -170,10 +179,27 @@ pub async fn run(
     Ok(())
 }
 
+/// Find an epic by its code, using client-side filtering since JSONB
+/// tables may not support server-side query param filtering.
+async fn find_epic_by_code(
+    client: &ApiClient,
+    code: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let all: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
+    all.data
+        .into_iter()
+        .find(|e| e["code"].as_str() == Some(code))
+        .ok_or_else(|| format!("Epic '{code}' not found").into())
+}
+
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() > max {
-        &s[..max]
-    } else {
-        s
+    if s.len() <= max {
+        return s;
     }
+    // Find the last char boundary at or before `max`
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

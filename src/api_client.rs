@@ -179,6 +179,34 @@ impl ApiClient {
         }
     }
 
+    /// Resolve a short ID prefix to a full UUID by scanning the table.
+    /// If the input is already a full UUID (36 chars), returns it as-is.
+    pub async fn resolve_id(&self, table: &str, prefix: &str) -> Result<String, ApiError> {
+        // Full UUID — pass through
+        if prefix.len() == 36 && prefix.contains('-') {
+            return Ok(prefix.to_string());
+        }
+
+        let resp: DataWrapper<Vec<serde_json::Value>> =
+            self.get(&format!("/v1/{table}")).await?;
+        let matches: Vec<&str> = resp
+            .data
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .filter(|id| id.starts_with(prefix))
+            .collect();
+
+        match matches.len() {
+            0 => Err(ApiError::NotFound(format!(
+                "No {table} row matching prefix '{prefix}'"
+            ))),
+            1 => Ok(matches[0].to_string()),
+            n => Err(ApiError::Validation(format!(
+                "Ambiguous prefix '{prefix}' matches {n} rows in {table}. Use more characters."
+            ))),
+        }
+    }
+
     fn status_to_error(&self, status: StatusCode, body: String) -> ApiError {
         match status.as_u16() {
             401 => ApiError::Auth(format!(
