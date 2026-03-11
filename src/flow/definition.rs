@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn default_flow_parses() {
         let flow = CeremonyFlow::default_flow();
-        assert_eq!(flow.nodes.len(), 13); // +deploy, +gate_deploy vs v1.1
-        assert_eq!(flow.edges.len(), 16); // +3 deploy edges vs v1.1 (13→16)
+        assert_eq!(flow.nodes.len(), 15); // v2.1: +deploy, gate_deploy, judge_code, gate_code
+        assert_eq!(flow.edges.len(), 19); // v2.1: dual judge + deploy edges
         assert!(flow.node("research").is_some());
         assert!(flow.node("execute").is_some());
         assert!(flow.node("deploy").is_some());

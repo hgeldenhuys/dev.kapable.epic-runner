@@ -1,10 +1,11 @@
 name: "Default Sprint Ceremony"
-version: "2.0.0"
+version: "2.1.0"
 description: |
-  Full autonomous ceremony: research → groom → execute → deploy → judge (production).
-  Gates short-circuit on failure. Deploy merges worktree → main, pushes, triggers
-  Connect App Pipeline. Judge verifies in production via Chrome.
-  SM retro always runs. Two-phase judgment: code quality + production verification.
+  Full autonomous ceremony with dual judgment:
+  research → groom → execute → code judge → deploy → production judge.
+  Code judge (pre-deploy): reviews diff, runs build, verifies quality.
+  Production judge (post-deploy): Chrome-based end-user verification.
+  Gates short-circuit on failure. SM retro always runs.
 
 nodes:
   - key: source
@@ -154,6 +155,57 @@ nodes:
       gate_field: impediment_raised
       gate_expect: "false"
 
+  - key: judge_code
+    node_type: agent
+    label: "Code Judge (build + diff)"
+    config:
+      model: sonnet
+      effort: high
+      budget_usd: 2.0
+      chrome: false
+      heartbeat_timeout_secs: 180
+      allowed_tools:
+        - Read
+        - Glob
+        - Grep
+        - "Bash(git *)"
+        - "Bash(bun *)"
+        - "Bash(ls *)"
+      system_prompt: |
+        You are an independent code quality judge for sprint {{sprint.number}} of epic {{epic.code}}.
+        You are NOT the developer — you are a reviewer verifying the work is deploy-ready.
+
+        Project conventions:
+        {{repo.claude_md}}
+
+        INSTRUCTIONS (execute ALL of these):
+        1. Run `git diff main..HEAD --stat` to see what files changed
+        2. Run `bun run build` to verify the build passes
+        3. Review the diff for obvious issues (broken imports, missing routes, syntax errors)
+        4. Check that new route files are registered in app/routes.ts
+        5. Verify no secrets or credentials are committed
+
+        Output ONLY valid JSON:
+        {
+          "build_passes": bool,
+          "files_changed": ["list of modified files"],
+          "issues": ["Any problems found — empty if clean"],
+          "deploy_ready": bool,
+          "summary": "Brief assessment"
+        }
+      prompt: |
+        Review the code changes for sprint {{sprint.number}} of epic {{epic.code}}.
+        Verify the build passes and the code is ready to deploy.
+        Ceremony results so far:
+        {{ceremony_results_json}}
+
+  - key: gate_code
+    node_type: gate
+    label: "Code OK?"
+    config:
+      gate_field: status
+      gate_expect: completed
+
   - key: deploy
     node_type: deploy
     label: "Deploy to Production"
@@ -292,9 +344,17 @@ edges:
   - source: execute
     target: gate_execute
   - source: gate_execute
-    target: deploy
+    target: judge_code
     handle: pass
   - source: gate_execute
+    target: merge_results
+    handle: fail
+  - source: judge_code
+    target: gate_code
+  - source: gate_code
+    target: deploy
+    handle: pass
+  - source: gate_code
     target: merge_results
     handle: fail
   - source: deploy
