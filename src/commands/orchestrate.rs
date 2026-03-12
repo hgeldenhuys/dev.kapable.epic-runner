@@ -240,11 +240,27 @@ pub async fn run(
                     && matches!(s["status"].as_str(), Some("ready" | "planned" | "draft"))
             })
             .collect();
-        eligible_stories.sort_by_key(|s| match s["status"].as_str() {
-            Some("ready") => 0,
-            Some("planned") => 1,
-            Some("draft") => 2,
-            _ => 3,
+        // Sort: fewest attempts first (untried foundations before retried dependents),
+        // then by status (ready > planned > draft), then by story code ascending
+        // (lower codes are typically prerequisites created first).
+        eligible_stories.sort_by(|a, b| {
+            let attempts_a = a["attempt_count"].as_i64().unwrap_or(0);
+            let attempts_b = b["attempt_count"].as_i64().unwrap_or(0);
+            attempts_a.cmp(&attempts_b)
+                .then_with(|| {
+                    let status_ord = |s: &serde_json::Value| match s["status"].as_str() {
+                        Some("ready") => 0,
+                        Some("planned") => 1,
+                        Some("draft") => 2,
+                        _ => 3,
+                    };
+                    status_ord(a).cmp(&status_ord(b))
+                })
+                .then_with(|| {
+                    let code_a = a["code"].as_str().unwrap_or("zzz");
+                    let code_b = b["code"].as_str().unwrap_or("zzz");
+                    code_a.cmp(code_b)
+                })
         });
 
         if eligible_stories.is_empty() {
