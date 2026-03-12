@@ -246,7 +246,8 @@ pub async fn run(
         eligible_stories.sort_by(|a, b| {
             let attempts_a = a["attempt_count"].as_i64().unwrap_or(0);
             let attempts_b = b["attempt_count"].as_i64().unwrap_or(0);
-            attempts_a.cmp(&attempts_b)
+            attempts_a
+                .cmp(&attempts_b)
                 .then_with(|| {
                     let status_ord = |s: &serde_json::Value| match s["status"].as_str() {
                         Some("ready") => 0,
@@ -343,29 +344,23 @@ pub async fn run(
         // Wait with timeout + outward heartbeat — prevents runaway processes from burning
         // unlimited credits AND keeps the sprint's heartbeat_at field fresh in the DB so
         // external observers (console UI) can detect zombie sprints.
-        let exit_code = match wait_with_heartbeat(
-            &mut child,
-            timeout_duration,
-            client,
-            sprint_id,
-        )
-        .await
-        {
-            Ok(status) => status.code().unwrap_or(-1),
-            Err(_) => {
-                eprintln!(
-                    "{} Sprint timed out after {} minutes — killing PID {}",
-                    "[timeout]".red().bold(),
-                    timeout_mins,
-                    child_pid,
-                );
-                // Kill the child process tree (cross-platform)
-                kill_process_tree(child_pid);
-                let _ = child.kill();
-                let _ = child.wait();
-                -1 // Treated as unexpected exit → sprint cancelled
-            }
-        };
+        let exit_code =
+            match wait_with_heartbeat(&mut child, timeout_duration, client, sprint_id).await {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => {
+                    eprintln!(
+                        "{} Sprint timed out after {} minutes — killing PID {}",
+                        "[timeout]".red().bold(),
+                        timeout_mins,
+                        child_pid,
+                    );
+                    // Kill the child process tree (cross-platform)
+                    kill_process_tree(child_pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    -1 // Treated as unexpected exit → sprint cancelled
+                }
+            };
 
         tracing::info!(exit_code, "Sprint-run process exited");
 
@@ -868,7 +863,7 @@ async fn load_sprint_history(client: &ApiClient, epic_code: &str) -> Option<Vec<
 /// If rebase conflicts, aborts and continues on the current base.
 /// Logs the base commit SHA for sprint context awareness.
 fn rebase_worktree_to_default_branch(worktree_path: &str) {
-    let default_branch = detect_default_branch(worktree_path);
+    let default_branch = crate::flow::engine::detect_default_branch(worktree_path);
 
     // Fetch latest default branch from origin
     let fetch = std::process::Command::new("git")
@@ -1087,9 +1082,7 @@ async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
                 }
             };
 
-            if is_stale
-                && cancel_stale_sprint(client, sprint, "stale-heartbeat").await
-            {
+            if is_stale && cancel_stale_sprint(client, sprint, "stale-heartbeat").await {
                 cleaned += 1;
             }
         }
@@ -1105,11 +1098,7 @@ async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
 }
 
 /// Cancel a single stale sprint. Returns true if successfully cancelled.
-async fn cancel_stale_sprint(
-    client: &ApiClient,
-    sprint: &serde_json::Value,
-    reason: &str,
-) -> bool {
+async fn cancel_stale_sprint(client: &ApiClient, sprint: &serde_json::Value, reason: &str) -> bool {
     let sprint_id = match sprint["id"].as_str() {
         Some(id) => id,
         None => return false,
@@ -1247,38 +1236,4 @@ fn kill_process_tree(pid: u32) {
         .output();
 }
 
-/// Detect the default branch of a git repository (main, master, or custom).
-/// Tries `git symbolic-ref refs/remotes/origin/HEAD` first, falls back to common names.
-fn detect_default_branch(repo_path: &str) -> String {
-    // Try symbolic-ref (set by git clone or `git remote set-head origin --auto`)
-    let output = std::process::Command::new("git")
-        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .current_dir(repo_path)
-        .output();
-
-    if let Ok(o) = output {
-        if o.status.success() {
-            let refname = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            // refs/remotes/origin/main → main
-            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
-                return branch.to_string();
-            }
-        }
-    }
-
-    // Fallback: check if origin/main or origin/master exists
-    for candidate in &["main", "master"] {
-        let check = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", &format!("origin/{candidate}")])
-            .current_dir(repo_path)
-            .output();
-        if let Ok(o) = check {
-            if o.status.success() {
-                return candidate.to_string();
-            }
-        }
-    }
-
-    // Last resort — default to "main"
-    "main".to_string()
-}
+// detect_default_branch is now `pub fn` in crate::flow::engine — use that instead.

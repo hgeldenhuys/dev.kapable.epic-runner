@@ -115,19 +115,25 @@ pub async fn run(
             .join(".claude/worktrees")
             .join(&epic.code);
         if wt_path.exists() {
-            // Fetch latest main first (the worktree might not see recent remote commits)
+            let default_branch = crate::flow::engine::detect_default_branch(repo_path.as_str());
+            let origin_branch = format!("origin/{}", default_branch);
+            // Fetch latest default branch first (the worktree might not see recent remote commits)
             let _ = std::process::Command::new("git")
-                .args(["fetch", "origin", "main"])
+                .args(["fetch", "origin", &default_branch])
                 .current_dir(&repo_path)
                 .output();
 
             let rebase = std::process::Command::new("git")
-                .args(["rebase", "origin/main"])
+                .args(["rebase", &origin_branch])
                 .current_dir(&wt_path)
                 .output();
             match rebase {
                 Ok(out) if out.status.success() => {
-                    eprintln!("{} Synced worktree to origin/main", "[sprint-run]".dimmed());
+                    eprintln!(
+                        "{} Synced worktree to {}",
+                        "[sprint-run]".dimmed(),
+                        origin_branch
+                    );
                 }
                 Ok(out) => {
                     // Abort failed rebase, fall back to hard reset
@@ -136,14 +142,15 @@ pub async fn run(
                         .current_dir(&wt_path)
                         .output();
                     let reset = std::process::Command::new("git")
-                        .args(["reset", "--hard", "origin/main"])
+                        .args(["reset", "--hard", &origin_branch])
                         .current_dir(&wt_path)
                         .output();
                     match reset {
                         Ok(r) if r.status.success() => {
                             eprintln!(
-                                "{} Synced worktree to origin/main (via reset)",
-                                "[sprint-run]".dimmed()
+                                "{} Synced worktree to {} (via reset)",
+                                "[sprint-run]".dimmed(),
+                                origin_branch
                             );
                         }
                         _ => {
@@ -193,15 +200,15 @@ pub async fn run(
         .map(|dod| serde_json::to_string_pretty(dod).unwrap_or_default())
         .unwrap_or_default();
 
+    let resolved_repo_path =
+        crate::repo_resolver::resolve_product_repo(product.repo_url.as_deref(), &product.repo_path)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let ctx = engine::FlowContext {
         epic: epic.clone(),
         sprint: sprint.clone(),
         stories,
-        repo_path: crate::repo_resolver::resolve_product_repo(
-            product.repo_url.as_deref(),
-            &product.repo_path,
-        )
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+        default_branch: engine::detect_default_branch(&resolved_repo_path),
+        repo_path: resolved_repo_path,
         model_override: args.model.clone(),
         effort_override: args.effort.clone(),
         budget_override: args.budget_override,
@@ -967,36 +974,47 @@ async fn update_product_brief(
     let description = product["description"].as_str().unwrap_or("");
     let existing_brief = product["brief"].as_str().unwrap_or("");
 
-    // Build updated brief
-    let mut brief = format!(
-        "# {name}\n\n\
-        **Slug:** {slug}\n\
-        **Description:** {description}\n\n"
-    );
+    // Determine if brief has rich hand-seeded content (architecture, file maps, etc.)
+    // Rich briefs contain sections beyond the auto-generated template.
+    let is_rich_brief = existing_brief.contains("## Architecture")
+        || existing_brief.contains("## File Map")
+        || existing_brief.contains("## Data API")
+        || existing_brief.contains("## What This Is")
+        || existing_brief.contains("## Key Route Groups")
+        || existing_brief.contains("## Crate Map");
 
-    // Include accumulated learnings
-    if !learnings.is_empty() {
-        brief.push_str("## Key Learnings\n\n");
-        brief.push_str(learnings);
-        brief.push('\n');
-    }
-
-    // Append latest retro insights
-    if let Some(retro) = retro_output {
-        if let Some(parsed) = crate::json_extract::extract_json_object(retro) {
-            if let Some(patterns) = parsed["patterns_to_codify"].as_array() {
-                if !patterns.is_empty() {
-                    brief.push_str("## Patterns & Conventions\n\n");
-                    for p in patterns {
-                        if let Some(text) = p.as_str() {
-                            brief.push_str(&format!("- {text}\n"));
+    let brief = if is_rich_brief {
+        // MERGE mode: preserve the rich brief, update Key Learnings + Patterns sections
+        merge_into_rich_brief(existing_brief, learnings, retro_output)
+    } else {
+        // REPLACE mode: auto-generate brief from template (legacy behavior)
+        let mut b = format!(
+            "# {name}\n\n\
+            **Slug:** {slug}\n\
+            **Description:** {description}\n\n"
+        );
+        if !learnings.is_empty() {
+            b.push_str("## Key Learnings\n\n");
+            b.push_str(learnings);
+            b.push('\n');
+        }
+        if let Some(retro) = retro_output {
+            if let Some(parsed) = crate::json_extract::extract_json_object(retro) {
+                if let Some(patterns) = parsed["patterns_to_codify"].as_array() {
+                    if !patterns.is_empty() {
+                        b.push_str("## Patterns & Conventions\n\n");
+                        for p in patterns {
+                            if let Some(text) = p.as_str() {
+                                b.push_str(&format!("- {text}\n"));
+                            }
                         }
+                        b.push('\n');
                     }
-                    brief.push('\n');
                 }
             }
         }
-    }
+        b
+    };
 
     // Add changelog entry
     let changelog_entry = json!({
@@ -1027,4 +1045,75 @@ async fn update_product_brief(
             .await;
         tracing::info!(product_id, "Updated product brief (PRODUCTS.md)");
     }
+}
+
+/// Merge retro learnings and patterns into an existing rich brief without destroying
+/// hand-seeded architecture/file map content. Replaces only the `## Key Learnings`
+/// and `## Patterns & Conventions` sections, preserving everything else.
+fn merge_into_rich_brief(existing: &str, learnings: &str, retro_output: Option<&str>) -> String {
+    // Build the new Key Learnings section
+    let new_learnings = if !learnings.is_empty() {
+        format!("## Key Learnings\n\n{learnings}\n")
+    } else {
+        "## Key Learnings\n\n".to_string()
+    };
+
+    // Build the new Patterns & Conventions section
+    let mut new_patterns = String::new();
+    if let Some(retro) = retro_output {
+        if let Some(parsed) = crate::json_extract::extract_json_object(retro) {
+            if let Some(patterns) = parsed["patterns_to_codify"].as_array() {
+                if !patterns.is_empty() {
+                    new_patterns.push_str("## Patterns & Conventions\n\n");
+                    for p in patterns {
+                        if let Some(text) = p.as_str() {
+                            new_patterns.push_str(&format!("- {text}\n"));
+                        }
+                    }
+                    new_patterns.push('\n');
+                }
+            }
+        }
+    }
+    if new_patterns.is_empty() {
+        new_patterns = "## Patterns & Conventions\n".to_string();
+    }
+
+    // Replace sections in the existing brief
+    let mut result = existing.to_string();
+
+    // Replace Key Learnings section (everything from "## Key Learnings" to next "## " or EOF)
+    result = replace_section(&result, "## Key Learnings", &new_learnings);
+
+    // Replace Patterns & Conventions section
+    result = replace_section(&result, "## Patterns & Conventions", &new_patterns);
+
+    result
+}
+
+/// Replace a markdown section (from header to next same-level header or EOF).
+fn replace_section(doc: &str, header: &str, replacement: &str) -> String {
+    let Some(start) = doc.find(header) else {
+        // Section doesn't exist — append it
+        let mut result = doc.trim_end().to_string();
+        result.push_str("\n\n");
+        result.push_str(replacement);
+        return result;
+    };
+
+    // Find the end of this section (next "## " header or EOF)
+    let after_header = start + header.len();
+    let end = doc[after_header..]
+        .find("\n## ")
+        .map(|pos| after_header + pos + 1) // +1 to include the newline
+        .unwrap_or(doc.len());
+
+    let mut result = String::with_capacity(doc.len());
+    result.push_str(&doc[..start]);
+    result.push_str(replacement);
+    if end < doc.len() {
+        result.push_str(&doc[end..]);
+    }
+
+    result
 }

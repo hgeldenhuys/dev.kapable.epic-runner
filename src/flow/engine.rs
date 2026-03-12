@@ -25,12 +25,53 @@ pub struct CheckpointedNode {
     pub impediment_raised: bool,
 }
 
+/// Detect the default branch of a git repository (main, master, or custom).
+/// Tries `git symbolic-ref refs/remotes/origin/HEAD` first, then falls back
+/// to checking whether origin/main or origin/master exists, and finally
+/// hard-defaults to "main" so callers never receive an empty string.
+pub fn detect_default_branch(repo_path: &str) -> String {
+    // Try symbolic-ref (set by git clone or `git remote set-head origin --auto`)
+    let output = std::process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_path)
+        .output();
+
+    if let Ok(o) = output {
+        if o.status.success() {
+            let refname = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // refs/remotes/origin/main → main
+            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+                return branch.to_string();
+            }
+        }
+    }
+
+    // Fallback: check if origin/main or origin/master exists
+    for candidate in &["main", "master"] {
+        let check = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", &format!("origin/{candidate}")])
+            .current_dir(repo_path)
+            .output();
+        if let Ok(o) = check {
+            if o.status.success() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Last resort — default to "main"
+    "main".to_string()
+}
+
 /// Context passed through the flow during execution.
 pub struct FlowContext {
     pub epic: Epic,
     pub sprint: Sprint,
     pub stories: serde_json::Value,
     pub repo_path: String,
+    /// Default branch detected from the remote (e.g. main, master, trunk).
+    /// Populated once at FlowContext construction via `detect_default_branch`.
+    pub default_branch: String,
     pub model_override: Option<String>,
     pub effort_override: Option<String>,
     pub budget_override: Option<f64>,
@@ -743,22 +784,23 @@ async fn execute_deploy_node(
         timestamp: chrono::Utc::now(),
     });
 
-    // Checkout main in the repo root
+    // Checkout the default branch in the repo root
+    let default_branch = ctx.default_branch.as_str();
     let checkout = std::process::Command::new("git")
-        .args(["checkout", "main"])
+        .args(["checkout", default_branch])
         .current_dir(repo_path)
         .output()?;
     if !checkout.status.success() {
         let err = String::from_utf8_lossy(&checkout.stderr);
         return Ok(deploy_failed(
             node,
-            &format!("Failed to checkout main: {}", err),
+            &format!("Failed to checkout {}: {}", default_branch, err),
         ));
     }
 
-    // Pull latest main first
+    // Pull latest default branch first
     let pull = std::process::Command::new("git")
-        .args(["pull", "origin", "main", "--rebase"])
+        .args(["pull", "origin", default_branch, "--rebase"])
         .current_dir(repo_path)
         .output()?;
     if !pull.status.success() {
@@ -771,7 +813,7 @@ async fn execute_deploy_node(
         let err = String::from_utf8_lossy(&pull.stderr);
         return Ok(deploy_failed(
             node,
-            &format!("Failed to pull latest main: {}", err),
+            &format!("Failed to pull latest {}: {}", default_branch, err),
         ));
     }
 
@@ -803,7 +845,7 @@ async fn execute_deploy_node(
     });
 
     let push = std::process::Command::new("git")
-        .args(["push", "origin", "main"])
+        .args(["push", "origin", default_branch])
         .current_dir(repo_path)
         .output()?;
     if !push.status.success() {
@@ -823,11 +865,11 @@ async fn execute_deploy_node(
         detail: None,
         timestamp: chrono::Utc::now(),
     });
-    // Use `git rebase main` from within the worktree directory — `git branch -f` fails
-    // when the branch is checked out in a worktree.
+    // Use `git rebase <default_branch>` from within the worktree directory — `git branch -f`
+    // fails when the branch is checked out in a worktree.
     let wt_abs = std::path::Path::new(repo_path).join(&worktree_path);
     let sync = std::process::Command::new("git")
-        .args(["rebase", "main"])
+        .args(["rebase", default_branch])
         .current_dir(&wt_abs)
         .output()?;
     if !sync.status.success() {
@@ -837,25 +879,31 @@ async fn execute_deploy_node(
             .current_dir(&wt_abs)
             .output()
             .ok();
-        // Fallback: hard reset to main (loses any uncommitted worktree changes, which is fine
-        // since we just committed everything in Step 1)
+        // Fallback: hard reset to default branch (loses any uncommitted worktree changes, which
+        // is fine since we just committed everything in Step 1)
         let reset = std::process::Command::new("git")
-            .args(["reset", "--hard", "main"])
+            .args(["reset", "--hard", default_branch])
             .current_dir(&wt_abs)
             .output()?;
         if !reset.status.success() {
             let err = String::from_utf8_lossy(&reset.stderr);
-            tracing::warn!("Failed to sync worktree to main (non-fatal): {}", err);
+            tracing::warn!(
+                "Failed to sync worktree to {} (non-fatal): {}",
+                default_branch,
+                err
+            );
         } else {
             tracing::info!(
-                "Synced {} to main HEAD via reset — next sprint starts fresh",
-                worktree_branch
+                "Synced {} to {} HEAD via reset — next sprint starts fresh",
+                worktree_branch,
+                default_branch
             );
         }
     } else {
         tracing::info!(
-            "Synced {} to main HEAD via rebase — next sprint starts fresh",
-            worktree_branch
+            "Synced {} to {} HEAD via rebase — next sprint starts fresh",
+            worktree_branch,
+            default_branch
         );
     }
 
@@ -1480,7 +1528,10 @@ fn interpolate(
         .replace("{{previous_learnings}}", &ctx.previous_learnings)
         .replace("{{deploy_output}}", ab_urls)
         .replace("{{product.brief}}", &ctx.product_brief)
-        .replace("{{product.definition_of_done}}", &ctx.product_definition_of_done)
+        .replace(
+            "{{product.definition_of_done}}",
+            &ctx.product_definition_of_done,
+        )
         .replace("{{epic.code}}", &ctx.epic.code)
         .replace("{{epic.title}}", &ctx.epic.title)
         .replace("{{epic.intent}}", &ctx.epic.intent)
@@ -1542,5 +1593,58 @@ fn save_checkpoint(
             }
         }
         Err(e) => tracing::warn!(error = %e, "Failed to serialize checkpoint"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that detect_default_branch falls back gracefully when there is no
+    /// remote configured (e.g. a brand-new temp directory with git init but no remote).
+    #[test]
+    fn test_detect_default_branch_fallback() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // Initialise a bare git repo — no remote, so symbolic-ref and rev-parse both fail.
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git init");
+        let branch = detect_default_branch(tmp.path().to_str().unwrap());
+        // Must not panic and must return a non-empty string.
+        assert!(!branch.is_empty(), "fallback branch must not be empty");
+        // The hard-coded last-resort is "main".
+        assert_eq!(branch, "main");
+    }
+
+    /// Verifies that detect_default_branch reads the symbolic-ref when available.
+    /// Uses `git symbolic-ref` to point refs/remotes/origin/HEAD → master, then
+    /// asserts the function returns "master" not "main".
+    #[test]
+    fn test_detect_default_branch() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let repo = tmp.path().to_str().unwrap();
+
+        // Init repo and create the ref namespace git clone would create.
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .expect("git init");
+
+        // Create the packed-refs directory structure so symbolic-ref can write.
+        std::process::Command::new("git")
+            .args([
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/master",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git symbolic-ref set");
+
+        let branch = detect_default_branch(repo);
+        assert_eq!(branch, "master", "should detect master from symbolic-ref");
     }
 }
