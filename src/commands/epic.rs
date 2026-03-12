@@ -66,6 +66,9 @@ pub async fn run(
             let product_id = product_data["id"].as_str().ok_or("Product has no id")?;
 
             // Determine instance number globally (not per-product) to prevent code collisions
+            tracing::debug!(
+                "Full scan of /v1/epics for uniqueness check (acceptable for creation)"
+            );
             let all_epics_global: DataWrapper<Vec<serde_json::Value>> =
                 client.get("/v1/epics").await?;
             let domain_upper = domain.to_uppercase();
@@ -133,7 +136,19 @@ pub async fn run(
                 None
             };
 
-            let resp: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
+            // Build server-side filter params (optimistic — API may ignore them)
+            let mut params: Vec<(&str, &str)> = Vec::new();
+            let pid_str;
+            if let Some(pid) = &product_id {
+                pid_str = pid.clone();
+                params.push(("product_id", &pid_str));
+            }
+            if let Some(s) = &status {
+                params.push(("status", s.as_str()));
+            }
+            let resp: DataWrapper<Vec<serde_json::Value>> =
+                client.get_with_params("/v1/epics", &params).await?;
+            // Client-side fallback — server may ignore query params on JSONB tables
             let filtered: Vec<&serde_json::Value> = resp
                 .data
                 .iter()
@@ -193,12 +208,25 @@ pub async fn run(
     Ok(())
 }
 
-/// Find an epic by its code, using client-side filtering since JSONB
-/// tables may not support server-side query param filtering.
+/// Find an epic by its code.
+/// Tries server-side filtering first, falls back to client-side if the API ignores the param.
 async fn find_epic_by_code(
     client: &ApiClient,
     code: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let resp: DataWrapper<Vec<serde_json::Value>> = client
+        .get_with_params("/v1/epics", &[("code", code)])
+        .await?;
+    // Check if server-side filter worked (single matching result)
+    if let Some(epic) = resp.data.iter().find(|e| e["code"].as_str() == Some(code)) {
+        return Ok(epic.clone());
+    }
+    // Fallback: if server returned empty (filter may have worked but no match)
+    // or returned everything (filter was ignored), do client-side scan
+    if resp.data.is_empty() {
+        return Err(format!("Epic '{code}' not found").into());
+    }
+    tracing::debug!("Server may have ignored 'code' filter — falling back to client-side");
     let all: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
     all.data
         .into_iter()

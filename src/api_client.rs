@@ -133,6 +133,31 @@ impl ApiClient {
         self.handle_response(resp).await
     }
 
+    /// GET with query string parameters for server-side filtering.
+    /// Appends params as `?key1=value1&key2=value2` to the URL.
+    /// The caller is responsible for client-side fallback if the server ignores the params.
+    pub async fn get_with_params<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+    ) -> Result<T, ApiError> {
+        let url = if params.is_empty() {
+            format!("{}{}", self.base_url, path)
+        } else {
+            let query: String = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("{}{}?{}", self.base_url, path, query)
+        };
+        let key = self.api_key.clone();
+        let resp = self
+            .send_with_retry(|| self.client.get(&url).header("x-api-key", &key))
+            .await?;
+        self.handle_response(resp).await
+    }
+
     pub async fn post<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,

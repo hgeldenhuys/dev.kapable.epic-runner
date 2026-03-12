@@ -87,14 +87,38 @@ pub async fn run(
         std::fs::remove_file(&lock_path_clone).ok();
     });
 
-    // 1. Look up epic (client-side filter — JSONB tables ignore query params)
-    let all_epics: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
-    let epic_data = all_epics
+    // Snapshot the binary to a temp location so rebuilds during orchestration
+    // don't invalidate macOS code signing for child process spawns (SIGKILL).
+    let exe_snapshot = std::env::temp_dir().join(format!("epic-runner-{}", std::process::id()));
+    std::fs::copy(std::env::current_exe()?, &exe_snapshot)?;
+    let exe_snapshot_clone = exe_snapshot.clone();
+    let _exe_guard = scopeguard::guard((), move |_| {
+        std::fs::remove_file(&exe_snapshot_clone).ok();
+    });
+
+    // 1. Look up epic (try server-side filter, fall back to client-side)
+    let epics_resp: DataWrapper<Vec<serde_json::Value>> = client
+        .get_with_params("/v1/epics", &[("code", args.epic_code.as_str())])
+        .await?;
+    let epic_data = match epics_resp
         .data
         .iter()
         .find(|e| e["code"].as_str() == Some(args.epic_code.as_str()))
-        .ok_or(format!("Epic {} not found", args.epic_code))?;
-    let epic: Epic = serde_json::from_value(epic_data.clone())?;
+    {
+        Some(e) => e.clone(),
+        None => {
+            // Fallback: server may have ignored the filter — full scan
+            tracing::debug!("Server may have ignored 'code' filter — falling back to full scan");
+            let all_epics: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await?;
+            all_epics
+                .data
+                .iter()
+                .find(|e| e["code"].as_str() == Some(args.epic_code.as_str()))
+                .ok_or(format!("Epic {} not found", args.epic_code))?
+                .clone()
+        }
+    };
+    let epic: Epic = serde_json::from_value(epic_data)?;
 
     if epic.status != EpicStatus::Active {
         return Err(format!("Epic {} is {}, not active", epic.code, epic.status).into());
@@ -133,12 +157,15 @@ pub async fn run(
     }
 
     // 3. Determine starting sprint number from existing sprints
-    let existing_sprints: DataWrapper<Vec<serde_json::Value>> =
-        client.get("/v1/er_sprints").await?;
+    let epic_id_str = epic.id.to_string();
+    let existing_sprints: DataWrapper<Vec<serde_json::Value>> = client
+        .get_with_params("/v1/er_sprints", &[("epic_id", &epic_id_str)])
+        .await?;
+    // Client-side fallback — server may return all sprints
     let max_existing = existing_sprints
         .data
         .iter()
-        .filter(|s| s["epic_id"].as_str() == Some(&epic.id.to_string()))
+        .filter(|s| s["epic_id"].as_str() == Some(epic_id_str.as_str()))
         .filter_map(|s| s["number"].as_i64())
         .max()
         .unwrap_or(0) as i32;
@@ -197,9 +224,12 @@ pub async fn run(
         let sprint_resp: serde_json::Value = client.post("/v1/er_sprints", &sprint_body).await?;
         let sprint_id = sprint_resp["id"].as_str().ok_or("Sprint creation failed")?;
 
-        // Load and assign stories (client-side filter for eligible stories in this epic)
+        // Load and assign stories (try server-side filter, fall back to client-side)
         // Priority: ready > planned > draft (most refined first)
-        let all_stories: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
+        let all_stories: DataWrapper<Vec<serde_json::Value>> = client
+            .get_with_params("/v1/stories", &[("epic_code", epic.code.as_str())])
+            .await?;
+        // Client-side fallback — server may return all stories
         let mut eligible_stories: Vec<&serde_json::Value> = all_stories
             .data
             .iter()
@@ -267,7 +297,7 @@ pub async fn run(
 
         // SPAWN SPRINT RUNNER AS CHILD PROCESS
         tracing::info!(sprint_id, sprint_num, "Spawning sprint-run child process");
-        let mut cmd = std::process::Command::new(std::env::current_exe()?);
+        let mut cmd = std::process::Command::new(&exe_snapshot);
         cmd.arg("sprint-run").arg(sprint_id);
         cmd.arg("--model").arg(&args.model);
         cmd.arg("--effort").arg(&args.effort);
@@ -402,8 +432,9 @@ pub async fn run(
 /// Reset incomplete stories from a finished sprint back to "ready" so the next sprint
 /// can pick them up. Stories that have been attempted 3+ times get marked "blocked" instead.
 async fn reset_failed_stories(client: &ApiClient, epic_code: &str, _sprint_num: i32) -> usize {
-    let all_stories: Result<DataWrapper<Vec<serde_json::Value>>, _> =
-        client.get("/v1/stories").await;
+    let all_stories: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params("/v1/stories", &[("epic_code", epic_code)])
+        .await;
     let stories = match all_stories {
         Ok(d) => d.data,
         Err(e) => {
@@ -494,8 +525,11 @@ async fn regroom_stories(client: &ApiClient, epic: &Epic, sprint_num: i32) {
         }
     };
 
-    // Load current ready stories for context
-    let all_stories: DataWrapper<Vec<serde_json::Value>> = match client.get("/v1/stories").await {
+    // Load current ready stories for context (try server-side filter)
+    let all_stories: DataWrapper<Vec<serde_json::Value>> = match client
+        .get_with_params("/v1/stories", &[("epic_code", epic.code.as_str())])
+        .await
+    {
         Ok(d) => d,
         Err(_) => return,
     };
@@ -746,20 +780,26 @@ async fn adapt_ceremony_flow(client: &ApiClient, epic_code: &str, current_sprint
 /// Returns None on any failure. Each sprint's ceremony_log is a JSON array of
 /// `{key, status, cost_usd}` objects written by run_sprint.rs.
 async fn load_sprint_history(client: &ApiClient, epic_code: &str) -> Option<Vec<SprintHistory>> {
-    // Load all sprints for this epic
-    let all_sprints: DataWrapper<Vec<serde_json::Value>> =
-        client.get("/v1/er_sprints").await.ok()?;
-
-    // Load all epics to find the epic_id for this code
-    let all_epics: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/epics").await.ok()?;
-    let epic_id = all_epics
+    // Load epic to find epic_id (try server-side filter)
+    let epics_resp: DataWrapper<Vec<serde_json::Value>> = client
+        .get_with_params("/v1/epics", &[("code", epic_code)])
+        .await
+        .ok()?;
+    // Client-side fallback — server may return all epics
+    let epic_id = epics_resp
         .data
         .iter()
         .find(|e| e["code"].as_str() == Some(epic_code))?
         .get("id")?
         .as_str()?;
 
-    // Filter sprints for this epic, sort by number
+    // Load sprints for this epic (try server-side filter)
+    let all_sprints: DataWrapper<Vec<serde_json::Value>> = client
+        .get_with_params("/v1/er_sprints", &[("epic_id", epic_id)])
+        .await
+        .ok()?;
+
+    // Client-side fallback — filter sprints for this epic, sort by number
     let mut sprints: Vec<&serde_json::Value> = all_sprints
         .data
         .iter()
@@ -907,7 +947,10 @@ async fn load_retro_for_sprint(
     epic_code: &str,
     sprint_number: i32,
 ) -> Option<scrum_master::RetroOutput> {
-    let all: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/sprint_learnings").await.ok()?;
+    let all: DataWrapper<Vec<serde_json::Value>> = client
+        .get_with_params("/v1/sprint_learnings", &[("epic_code", epic_code)])
+        .await
+        .ok()?;
 
     let learning = all.data.iter().find(|l| {
         l["epic_code"].as_str() == Some(epic_code)
@@ -945,8 +988,9 @@ async fn load_retro_for_sprint(
 /// Clean up stale sprints from previous crashed orchestrator runs.
 /// Any sprint in "executing" or "planning" status with no active process is marked "cancelled".
 async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
-    let all_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> =
-        client.get("/v1/er_sprints").await;
+    let all_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params("/v1/er_sprints", &[("epic_id", epic_id)])
+        .await;
     let sprints = match all_sprints {
         Ok(d) => d.data,
         Err(_) => return,

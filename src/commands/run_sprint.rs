@@ -420,8 +420,9 @@ pub async fn run(
 async fn load_previous_learnings(client: &ApiClient, epic_code: &str) -> String {
     use crate::api_client::DataWrapper;
 
-    let resp: Result<DataWrapper<Vec<serde_json::Value>>, _> =
-        client.get("/v1/sprint_learnings").await;
+    let resp: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params("/v1/sprint_learnings", &[("epic_code", epic_code)])
+        .await;
 
     let learnings = match resp {
         Ok(wrapper) => wrapper.data,
