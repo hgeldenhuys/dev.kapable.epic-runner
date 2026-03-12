@@ -42,6 +42,10 @@ pub struct OrchestrateArgs {
     /// Dry run — plan sprints without executing
     #[arg(long, default_value = "false")]
     pub dry_run: bool,
+
+    /// Sprint timeout in minutes (kills runaway sprint processes)
+    #[arg(long, default_value = "60")]
+    pub sprint_timeout: u64,
 }
 
 pub async fn run(
@@ -57,16 +61,24 @@ pub async fn run(
         return Err("claude CLI not found in PATH".into());
     }
 
-    // Lock file
+    // Lock file with dead PID detection
     let lock_path = format!(".epic-runner/{}.lock", args.epic_code);
     if std::path::Path::new(&lock_path).exists() {
-        let pid = std::fs::read_to_string(&lock_path).unwrap_or_default();
-        return Err(format!(
-            "Epic {} already running (PID {})",
-            args.epic_code,
-            pid.trim()
-        )
-        .into());
+        let pid_str = std::fs::read_to_string(&lock_path).unwrap_or_default();
+        let pid = pid_str.trim().parse::<u32>().unwrap_or(0);
+
+        if pid > 0 && is_process_alive(pid) {
+            return Err(format!("Epic {} already running (PID {})", args.epic_code, pid).into());
+        } else {
+            // Stale lock — process is dead. Clean up and proceed.
+            eprintln!(
+                "{} Removing stale lock for {} (PID {} is dead)",
+                "[cleanup]".dimmed(),
+                args.epic_code,
+                pid,
+            );
+            std::fs::remove_file(&lock_path).ok();
+        }
     }
     std::fs::create_dir_all(".epic-runner").ok();
     std::fs::write(&lock_path, std::process::id().to_string())?;
@@ -160,9 +172,9 @@ pub async fn run(
                 }
             }
 
-            // Rebase worktree to latest main (WoW: Sprint Discipline — process improvement 2026-03-11)
-            // This prevents stale worktrees from redoing work already merged to main.
-            rebase_worktree_to_main(&worktree_path);
+            // Rebase worktree to latest default branch (main/master/custom)
+            // This prevents stale worktrees from redoing work already merged.
+            rebase_worktree_to_default_branch(&worktree_path);
         }
 
         // Create sprint in DB with sprint goal derived from epic intent
@@ -269,8 +281,34 @@ pub async fn run(
             cmd.arg("--budget-override").arg(budget.to_string());
         }
 
-        let exit_status = cmd.status()?;
-        let exit_code = exit_status.code().unwrap_or(-1);
+        let mut child = cmd.spawn()?;
+        let child_pid = child.id();
+        let timeout_mins = args.sprint_timeout;
+        let timeout_duration = std::time::Duration::from_secs(timeout_mins * 60);
+
+        // Wait with timeout — prevents runaway processes from burning unlimited credits
+        let exit_code = match wait_with_timeout(&mut child, timeout_duration) {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => {
+                eprintln!(
+                    "{} Sprint timed out after {} minutes — killing PID {}",
+                    "[timeout]".red().bold(),
+                    timeout_mins,
+                    child_pid,
+                );
+                // Kill the child process group (negative PID = process group)
+                unsafe {
+                    libc::kill(-(child_pid as i32), libc::SIGTERM);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                unsafe {
+                    libc::kill(-(child_pid as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                -1 // Treated as unexpected exit → sprint cancelled
+            }
+        };
 
         tracing::info!(exit_code, "Sprint-run process exited");
 
@@ -759,24 +797,28 @@ async fn load_sprint_history(client: &ApiClient, epic_code: &str) -> Option<Vec<
     Some(history)
 }
 
-/// Rebase the epic worktree to the latest origin/main.
+/// Rebase the epic worktree to the latest default branch (auto-detected).
 /// If rebase conflicts, aborts and continues on the current base.
 /// Logs the base commit SHA for sprint context awareness.
-fn rebase_worktree_to_main(worktree_path: &str) {
-    // Fetch latest main from origin
+fn rebase_worktree_to_default_branch(worktree_path: &str) {
+    let default_branch = detect_default_branch(worktree_path);
+
+    // Fetch latest default branch from origin
     let fetch = std::process::Command::new("git")
-        .args(["fetch", "origin", "main"])
+        .args(["fetch", "origin", &default_branch])
         .current_dir(worktree_path)
         .output();
 
+    let origin_ref = format!("origin/{default_branch}");
+
     if let Err(e) = fetch {
-        tracing::warn!(error = %e, "Failed to fetch origin/main — skipping rebase");
+        tracing::warn!(error = %e, branch = %default_branch, "Failed to fetch — skipping rebase");
         return;
     }
     let fetch_output = fetch.unwrap();
     if !fetch_output.status.success() {
         let stderr = String::from_utf8_lossy(&fetch_output.stderr);
-        tracing::warn!(stderr = %stderr, "git fetch origin main failed — skipping rebase");
+        tracing::warn!(stderr = %stderr, branch = %default_branch, "git fetch failed — skipping rebase");
         return;
     }
 
@@ -789,26 +831,27 @@ fn rebase_worktree_to_main(worktree_path: &str) {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    // Get origin/main SHA for comparison
-    let origin_main = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "origin/main"])
+    // Get origin/{default_branch} SHA for comparison
+    let origin_head = std::process::Command::new("git")
+        .args(["rev-parse", "--short", &origin_ref])
         .current_dir(worktree_path)
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    if head_before == origin_main {
+    if head_before == origin_head {
         tracing::debug!(
             head = %head_before,
-            "Worktree already at origin/main — no rebase needed"
+            branch = %default_branch,
+            "Worktree already at origin — no rebase needed"
         );
         return;
     }
 
     // Attempt rebase
     let rebase = std::process::Command::new("git")
-        .args(["rebase", "origin/main"])
+        .args(["rebase", &origin_ref])
         .current_dir(worktree_path)
         .output();
 
@@ -823,8 +866,9 @@ fn rebase_worktree_to_main(worktree_path: &str) {
                 .unwrap_or_default();
 
             eprintln!(
-                "{} Worktree rebased to origin/main ({} → {})",
+                "{} Worktree rebased to {} ({} → {})",
                 "[rebase]".dimmed(),
+                origin_ref.cyan(),
                 head_before.dimmed(),
                 head_after.green(),
             );
@@ -844,10 +888,11 @@ fn rebase_worktree_to_main(worktree_path: &str) {
                 .ok();
 
             eprintln!(
-                "{} Rebase conflicted — continuing on {} (origin/main is {})",
+                "{} Rebase conflicted — continuing on {} ({} is {})",
                 "[rebase]".yellow(),
                 head_before.dimmed(),
-                origin_main.dimmed(),
+                origin_ref.dimmed(),
+                origin_head.dimmed(),
             );
         }
         Err(e) => {
@@ -947,9 +992,80 @@ async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
 
     if cleaned > 0 {
         eprintln!(
-            "{} Marked {} stale sprint(s) as failed",
+            "{} Marked {} stale sprint(s) as cancelled",
             "[cleanup]".dimmed(),
             cleaned,
         );
     }
+}
+
+/// Wait for a child process with a timeout.
+/// Returns Ok(ExitStatus) if the process exits within the timeout, Err(()) if it times out.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::ExitStatus, ()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let poll_interval = std::time::Duration::from_secs(2);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(());
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Error waiting for child process");
+                return Err(());
+            }
+        }
+    }
+}
+
+/// Check if a process with the given PID is still alive.
+/// Uses kill(pid, 0) which sends no signal but checks process existence.
+/// Works on both macOS and Linux (unlike /proc which is Linux-only).
+fn is_process_alive(pid: u32) -> bool {
+    // SAFETY: kill(pid, 0) is a standard POSIX call that checks process existence
+    // without sending any signal. Returns 0 if process exists, -1 with ESRCH if not.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Detect the default branch of a git repository (main, master, or custom).
+/// Tries `git symbolic-ref refs/remotes/origin/HEAD` first, falls back to common names.
+fn detect_default_branch(repo_path: &str) -> String {
+    // Try symbolic-ref (set by git clone or `git remote set-head origin --auto`)
+    let output = std::process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_path)
+        .output();
+
+    if let Ok(o) = output {
+        if o.status.success() {
+            let refname = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // refs/remotes/origin/main → main
+            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+                return branch.to_string();
+            }
+        }
+    }
+
+    // Fallback: check if origin/main or origin/master exists
+    for candidate in &["main", "master"] {
+        let check = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", &format!("origin/{candidate}")])
+            .current_dir(repo_path)
+            .output();
+        if let Ok(o) = check {
+            if o.status.success() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Last resort — default to "main"
+    "main".to_string()
 }
