@@ -760,6 +760,48 @@ async fn execute_deploy_node(
         return Ok(deploy_failed(node, &format!("Push failed: {}", err)));
     }
 
+    // Step 3b: Sync worktree branch to main — prevents stale-worktree rework in next sprint.
+    // After merging worktree→main, the worktree branch is behind main (main has the merge commit).
+    // Reset the worktree branch to main's HEAD so the next sprint starts with current code.
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Syncing {} to main HEAD", worktree_branch),
+        detail: None,
+        timestamp: chrono::Utc::now(),
+    });
+    // Use `git rebase main` from within the worktree directory — `git branch -f` fails
+    // when the branch is checked out in a worktree.
+    let wt_abs = std::path::Path::new(repo_path).join(&worktree_path);
+    let sync = std::process::Command::new("git")
+        .args(["rebase", "main"])
+        .current_dir(&wt_abs)
+        .output()?;
+    if !sync.status.success() {
+        // Abort failed rebase, then try reset as fallback
+        std::process::Command::new("git")
+            .args(["rebase", "--abort"])
+            .current_dir(&wt_abs)
+            .output()
+            .ok();
+        // Fallback: hard reset to main (loses any uncommitted worktree changes, which is fine
+        // since we just committed everything in Step 1)
+        let reset = std::process::Command::new("git")
+            .args(["reset", "--hard", "main"])
+            .current_dir(&wt_abs)
+            .output()?;
+        if !reset.status.success() {
+            let err = String::from_utf8_lossy(&reset.stderr);
+            tracing::warn!("Failed to sync worktree to main (non-fatal): {}", err);
+        } else {
+            tracing::info!("Synced {} to main HEAD via reset — next sprint starts fresh", worktree_branch);
+        }
+    } else {
+        tracing::info!("Synced {} to main HEAD via rebase — next sprint starts fresh", worktree_branch);
+    }
+
     // Step 4: Trigger Connect App Pipeline
     // If no deploy_app_id is configured, skip gracefully — this product is a CLI tool
     // (or other non-Connect-App artifact) that doesn't need pipeline deployment.
