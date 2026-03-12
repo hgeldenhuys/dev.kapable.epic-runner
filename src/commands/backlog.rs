@@ -49,6 +49,12 @@ pub enum BacklogAction {
         description: Option<String>,
         #[arg(long)]
         points: Option<i32>,
+        /// T-shirt size for context capacity planning (xs/s/m/l/xl)
+        #[arg(long)]
+        size: Option<String>,
+        /// Tags for groomer matching (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
     },
     /// List backlog stories
     List {
@@ -83,6 +89,8 @@ pub async fn run(
             epic,
             description,
             points,
+            size,
+            tags,
         } => {
             // Look up product by slug
             let all_products: DataWrapper<Vec<serde_json::Value>> =
@@ -96,7 +104,7 @@ pub async fn run(
 
             let code = next_story_code(client, product_id).await?;
 
-            let body = json!({
+            let mut body = json!({
                 "product_id": product_id,
                 "code": code,
                 "title": title,
@@ -105,6 +113,29 @@ pub async fn run(
                 "points": points,
                 "status": "draft",
             });
+            // v3 fields: size and tags for backlog-first model
+            if let Some(s) = &size {
+                body["size"] = json!(s);
+            }
+            if let Some(t) = &tags {
+                body["tags"] = json!(t);
+            }
+
+            // Also create in backlog_items table for v3 (dual-write)
+            let v3_body = json!({
+                "product_id": product_id,
+                "code": code,
+                "title": title,
+                "description": description,
+                "size": size,
+                "tags": tags,
+                "status": "draft",
+            });
+            // v3 table write — fail silently if table doesn't exist yet
+            let _ = client
+                .post::<_, serde_json::Value>("/v1/backlog_items", &v3_body)
+                .await;
+
             let resp: serde_json::Value = client.post("/v1/stories", &body).await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);

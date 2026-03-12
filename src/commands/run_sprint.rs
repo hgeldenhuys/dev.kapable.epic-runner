@@ -264,6 +264,46 @@ pub async fn run(
         create_backlog_from_retro(&epic.code, sprint.number, retro_result);
     }
 
+    // 11c. v3: Create delta stories from judge verdict back into backlog
+    if let Some(verdict) = &judge_verdict {
+        if let Some(delta_stories) = &verdict.delta_stories {
+            for delta in delta_stories {
+                let body = json!({
+                    "product_id": epic.product_id.to_string(),
+                    "title": delta.title,
+                    "description": delta.description,
+                    "status": "draft",
+                    "size": delta.size,
+                    "tags": delta.tags,
+                });
+                // Write to v3 backlog_items table (best-effort)
+                let _ = client
+                    .post::<_, serde_json::Value>("/v1/backlog_items", &body)
+                    .await;
+                // Also write to v2 stories table for backward compat
+                let _ = client
+                    .post::<_, serde_json::Value>(
+                        "/v1/stories",
+                        &json!({
+                            "product_id": epic.product_id.to_string(),
+                            "title": delta.title,
+                            "description": delta.description,
+                            "status": "draft",
+                        }),
+                    )
+                    .await;
+                tracing::info!(title = %delta.title, "Judge created delta story → backlog");
+            }
+            if !delta_stories.is_empty() {
+                eprintln!(
+                    "{} Judge created {} delta stories for next sprint",
+                    "[backlog]".dimmed(),
+                    delta_stories.len()
+                );
+            }
+        }
+    }
+
     // 12. Emit structured metrics summary (for aggregation + debugging)
     let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
     let completed_nodes = results

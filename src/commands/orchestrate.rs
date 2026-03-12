@@ -165,13 +165,22 @@ pub async fn run(
             rebase_worktree_to_main(&worktree_path);
         }
 
-        // Create sprint in DB
+        // Create sprint in DB with sprint goal derived from epic intent
         let session_id = Uuid::new_v4();
+        let sprint_goal = if sprint_num == 1 {
+            format!("Initial sprint: {}", &epic.intent)
+        } else {
+            format!(
+                "Sprint {} — continue epic mission: {}",
+                sprint_num, &epic.intent
+            )
+        };
         let sprint_body = json!({
             "epic_id": epic.id.to_string(),
             "number": sprint_num,
             "session_id": session_id.to_string(),
             "status": "planning",
+            "goal": sprint_goal,
         });
         let sprint_resp: serde_json::Value = client.post("/v1/er_sprints", &sprint_body).await?;
         let sprint_id = sprint_resp["id"].as_str().ok_or("Sprint creation failed")?;
@@ -209,6 +218,7 @@ pub async fn run(
             .filter_map(|s| s["id"].as_str().map(String::from))
             .collect();
 
+        // v2 compat: attach stories to sprint as inline JSON
         if let Err(e) = client
             .patch::<_, serde_json::Value>(
                 &format!("/v1/er_sprints/{sprint_id}"),
@@ -217,6 +227,20 @@ pub async fn run(
             .await
         {
             tracing::warn!(error = %e, "Failed to attach stories to sprint — continuing");
+        }
+
+        // v3: create sprint_assignments (decoupled story-sprint relationship)
+        for story in &batch {
+            if let Some(sid) = story["id"].as_str() {
+                let assignment = json!({
+                    "sprint_id": sprint_id,
+                    "backlog_item_id": sid,
+                    "status": "assigned",
+                });
+                let _ = client
+                    .post::<_, serde_json::Value>("/v1/sprint_assignments", &assignment)
+                    .await;
+            }
         }
 
         // Transition stories to planned

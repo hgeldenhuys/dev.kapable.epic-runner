@@ -129,6 +129,27 @@ pub struct JudgeVerdict {
     pub criteria_results: Vec<CriterionResult>,
     pub summary: String,
     pub evidence: Vec<String>,
+    /// v3: Mission progress percentage (0-100)
+    #[serde(default)]
+    pub mission_progress: Option<f64>,
+    /// v3: Whether the code is ready to deploy
+    #[serde(default)]
+    pub deploy_ready: Option<bool>,
+    /// v3: New stories discovered during this sprint (to add to backlog)
+    #[serde(default)]
+    pub delta_stories: Option<Vec<DeltaStory>>,
+    /// v3: List of story codes completed in this sprint
+    #[serde(default)]
+    pub stories_completed: Option<Vec<String>>,
+}
+
+/// A story discovered by the judge during sprint evaluation, to be added back to the backlog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaStory {
+    pub title: String,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub size: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,4 +364,85 @@ pub struct RubberDuckSession {
     pub recommended_action: SupervisorAction,
     pub cost_usd: Option<f64>,
     pub timestamp: DateTime<Utc>,
+}
+
+// ── Backlog Item (v3) ─────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacklogItem {
+    pub id: Uuid,
+    pub product_id: Uuid,
+    #[serde(default)]
+    pub code: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    /// JSON array of {criterion, testable_by}
+    pub acceptance_criteria: Option<serde_json::Value>,
+    /// JSON array of {task, file_path, line_number}
+    pub tasks: Option<serde_json::Value>,
+    /// T-shirt size: xs, s, m, l, xl
+    #[serde(default)]
+    pub size: Option<String>,
+    /// Tags for groomer matching to epic mission
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    pub status: BacklogItemStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum BacklogItemStatus {
+    Draft,
+    Refined,
+    Ready,
+    Done,
+}
+
+impl std::fmt::Display for BacklogItemStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BacklogItemStatus::Draft => "draft",
+            BacklogItemStatus::Refined => "refined",
+            BacklogItemStatus::Ready => "ready",
+            BacklogItemStatus::Done => "done",
+        };
+        write!(f, "{s}")
+    }
+}
+
+// ── Sprint Assignment (v3) ────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SprintAssignment {
+    pub id: Uuid,
+    pub sprint_id: Uuid,
+    pub backlog_item_id: Uuid,
+    pub status: AssignmentStatus,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    /// What was accomplished, even if partial
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignmentStatus {
+    Assigned,
+    InProgress,
+    Completed,
+    Deferred,
+}
+
+impl std::fmt::Display for AssignmentStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            AssignmentStatus::Assigned => "assigned",
+            AssignmentStatus::InProgress => "in_progress",
+            AssignmentStatus::Completed => "completed",
+            AssignmentStatus::Deferred => "deferred",
+        };
+        write!(f, "{s}")
+    }
 }

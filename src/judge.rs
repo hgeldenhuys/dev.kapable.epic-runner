@@ -57,6 +57,10 @@ mod tests {
             criteria_results: vec![],
             summary: "ok".to_string(),
             evidence: vec![],
+            mission_progress: None,
+            deploy_ready: None,
+            delta_stories: None,
+            stories_completed: None,
         };
         assert!(!evaluate_verdict(&Some(low_confidence)));
 
@@ -66,6 +70,10 @@ mod tests {
             criteria_results: vec![],
             summary: "no".to_string(),
             evidence: vec![],
+            mission_progress: None,
+            deploy_ready: None,
+            delta_stories: None,
+            stories_completed: None,
         };
         assert!(!evaluate_verdict(&Some(not_satisfied)));
 
@@ -75,6 +83,10 @@ mod tests {
             criteria_results: vec![],
             summary: "yes".to_string(),
             evidence: vec![],
+            mission_progress: None,
+            deploy_ready: None,
+            delta_stories: None,
+            stories_completed: None,
         };
         assert!(evaluate_verdict(&Some(good)));
     }

@@ -35,6 +35,9 @@ const TABLES: &[&str] = &[
     "rubber_duck_sessions",
     "ceremony_events",
     "sprint_learnings",
+    // v3: backlog-first model
+    "backlog_items",
+    "sprint_assignments",
 ];
 
 pub async fn run(
