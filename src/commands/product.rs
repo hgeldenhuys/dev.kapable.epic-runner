@@ -20,8 +20,12 @@ pub enum ProductAction {
         name: String,
         #[arg(long)]
         slug: String,
+        /// Local repository path (DEPRECATED: use --repo-url for portability)
         #[arg(long)]
-        repo_path: String,
+        repo_path: Option<String>,
+        /// Git remote URL for multi-machine portability (e.g. git@github.com:org/repo.git)
+        #[arg(long)]
+        repo_url: Option<String>,
         #[arg(long)]
         description: Option<String>,
         /// Short prefix for story codes (e.g. "ER" → ER-001). Defaults to uppercase slug initials.
@@ -44,18 +48,43 @@ pub async fn run(
             name,
             slug,
             repo_path,
+            repo_url,
             description,
             story_prefix,
         } => {
+            // Must provide at least one of --repo-url or --repo-path
+            if repo_url.is_none() && repo_path.is_none() {
+                return Err("Must provide --repo-url (recommended) or --repo-path. \
+                     Use --repo-url for multi-machine portability."
+                    .into());
+            }
+
+            // If only repo_url provided, use CWD as repo_path placeholder
+            let effective_repo_path = repo_path.unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            });
+
+            if repo_url.is_none() {
+                eprintln!(
+                    "Warning: --repo-path is machine-specific and deprecated. \
+                     Use --repo-url for multi-machine portability."
+                );
+            }
+
             // Derive prefix from slug if not provided: "epic-runner" → "ER"
             let prefix = story_prefix.unwrap_or_else(|| derive_prefix(&slug));
-            let body = json!({
+            let mut body = json!({
                 "name": name,
                 "slug": slug,
-                "repo_path": repo_path,
+                "repo_path": effective_repo_path,
                 "description": description,
                 "story_prefix": prefix,
             });
+            if let Some(ref url) = repo_url {
+                body["repo_url"] = json!(url);
+            }
             let resp: serde_json::Value = client.post("/v1/products", &body).await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -65,6 +94,11 @@ pub async fn run(
                 eprintln!(
                     "  Story prefix: {prefix} (stories will be {prefix}-001, {prefix}-002, ...)"
                 );
+                if let Some(ref url) = repo_url {
+                    eprintln!("  Repo URL: {url} (portable)");
+                } else {
+                    eprintln!("  Repo path: {effective_repo_path} (machine-specific)");
+                }
             }
         }
         ProductAction::List => {
@@ -73,14 +107,21 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&resp.data)?);
             } else {
                 let mut table = Table::new();
-                table.set_header(vec!["ID", "Name", "Slug", "Repo Path"]);
+                table.set_header(vec!["ID", "Name", "Slug", "Repo", "Portable"]);
                 for row in &resp.data {
                     let p: Product = serde_json::from_value(row.clone())?;
+                    let repo_display = if let Some(ref url) = p.repo_url {
+                        url.clone()
+                    } else {
+                        p.repo_path.clone()
+                    };
+                    let portable = if p.repo_url.is_some() { "yes" } else { "no" };
                     table.add_row(vec![
                         Cell::new(&p.id.to_string()[..8]),
                         Cell::new(&p.name),
                         Cell::new(&p.slug),
-                        Cell::new(&p.repo_path),
+                        Cell::new(&repo_display),
+                        Cell::new(portable),
                     ]);
                 }
                 println!("{table}");

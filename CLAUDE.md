@@ -112,3 +112,18 @@ Tables provisioned by `epic-runner init`: products, stories, epics, **er_sprints
 ## Claude Headless Integration
 
 Sprint ceremonies dispatch Claude Code via subprocess (`claude -p --output-format stream-json`). The executor parses stream-json events, tracks cost, and handles stop-hook loops with supervisor escalation.
+
+## Autonomous Operation — READ THIS
+
+**STOP. Before doing ANYTHING on epic-runner, read `.epic-runner/overnight-ops.md`.**
+
+That file is your operations manual. It defines your role (PO + Orchestrator),
+your loop, your failure modes, and what "done" actually means.
+
+Key rules (details in overnight-ops.md):
+- **Use epic-runner to build epic-runner.** Do not write code manually. Create stories, kick off epics.
+- **Never declare code "done" without running `epic-runner orchestrate`.** Unit tests ≠ done.
+- **Never stop.** When one epic finishes, start the next. Create new work if the queue is empty.
+- **After compaction: re-read `.epic-runner/overnight-ops.md` IMMEDIATELY.**
+- **Establish `/loop 10m`** — the loop reads overnight-ops.md each cycle. It is the heartbeat.
+- **Audio feedback** — `/speak` every status change, save MP3s to `/tmp/radio-claude/`.

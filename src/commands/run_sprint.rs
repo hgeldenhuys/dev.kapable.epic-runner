@@ -119,7 +119,11 @@ pub async fn run(
         epic: epic.clone(),
         sprint: sprint.clone(),
         stories,
-        repo_path: product.repo_path.clone(),
+        repo_path: crate::repo_resolver::resolve_product_repo(
+            product.repo_url.as_deref(),
+            &product.repo_path,
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
         model_override: Some(args.model.clone()),
         effort_override: Some(args.effort.clone()),
         budget_override: args.budget_override,

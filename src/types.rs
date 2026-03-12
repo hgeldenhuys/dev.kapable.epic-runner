@@ -14,6 +14,9 @@ pub struct Product {
     /// Short prefix for story codes, e.g. "ER" → stories become ER-001, ER-002
     #[serde(default)]
     pub story_prefix: Option<String>,
+    /// Git remote URL for multi-machine portability. When set, repo_path is resolved locally.
+    #[serde(default)]
+    pub repo_url: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -23,6 +26,9 @@ pub struct CreateProduct {
     pub slug: String,
     pub repo_path: String,
     pub description: Option<String>,
+    /// Git remote URL for multi-machine portability
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
 }
 
 // ── Story (Backlog Item) ───────────────────────

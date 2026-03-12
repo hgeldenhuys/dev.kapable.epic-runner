@@ -7,6 +7,7 @@ pub mod executor;
 pub mod flow;
 pub mod impediments;
 pub mod judge;
+pub mod repo_resolver;
 pub mod scrum_master;
 pub mod stream;
 pub mod supervisor;
