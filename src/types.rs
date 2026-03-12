@@ -177,6 +177,12 @@ pub struct Sprint {
     /// v3: Sprint velocity — {stories_planned, stories_completed, context_windows_used}
     #[serde(default)]
     pub velocity: Option<serde_json::Value>,
+    /// Total cost in USD for this sprint (sum of all ceremony node costs)
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// Per-ceremony cost breakdown: {"researcher": 0.96, "builder": 1.97, ...}
+    #[serde(default)]
+    pub ceremony_costs: Option<serde_json::Value>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,

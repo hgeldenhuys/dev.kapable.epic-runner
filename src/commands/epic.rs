@@ -188,6 +188,39 @@ pub async fn run(
         EpicAction::Show { code } => {
             let epic = find_epic_by_code(client, &code).await?;
             println!("{}", serde_json::to_string_pretty(&epic)?);
+
+            // Show cumulative cost across all sprints
+            let epic_id = epic["id"].as_str().unwrap_or("");
+            let all_sprints: DataWrapper<Vec<serde_json::Value>> = client
+                .get_with_params("/v1/er_sprints", &[("epic_id", epic_id)])
+                .await
+                .unwrap_or(DataWrapper { data: vec![] });
+
+            let mut total_epic_cost = 0.0f64;
+            let mut sprint_count = 0;
+            for sprint in &all_sprints.data {
+                // Check epic_id match (server may ignore filter)
+                if sprint["epic_id"].as_str() != Some(epic_id) {
+                    continue;
+                }
+                if let Some(cost) = sprint["cost_usd"].as_f64() {
+                    total_epic_cost += cost;
+                    sprint_count += 1;
+                } else if let Some(vel) = sprint.get("velocity") {
+                    // Fallback: read from velocity JSON for older sprints
+                    if let Some(cost) = vel["total_cost_usd"].as_f64() {
+                        total_epic_cost += cost;
+                        sprint_count += 1;
+                    }
+                }
+            }
+
+            if sprint_count > 0 {
+                eprintln!(
+                    "\nEpic cumulative cost: ${:.2} across {} sprint(s)",
+                    total_epic_cost, sprint_count
+                );
+            }
         }
         EpicAction::Close { code } => {
             let epic = find_epic_by_code(client, &code).await?;

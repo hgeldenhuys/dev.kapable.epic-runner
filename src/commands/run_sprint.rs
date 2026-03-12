@@ -230,6 +230,20 @@ pub async fn run(
 
     // Compute cost + node stats (used in velocity, metrics, and sprint PATCH)
     let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
+
+    // Build per-ceremony cost breakdown
+    let mut cost_map = serde_json::Map::new();
+    for r in &results {
+        if let Some(cost) = r.cost_usd {
+            cost_map.insert(r.key.clone(), serde_json::Value::from(cost));
+        }
+    }
+    let ceremony_costs = if cost_map.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(cost_map))
+    };
+
     let completed_nodes = results
         .iter()
         .filter(|r| r.status == CeremonyStatus::Completed)
@@ -263,6 +277,8 @@ pub async fn run(
                 "finished_at": chrono::Utc::now().to_rfc3339(),
                 "ceremony_log": ceremony_log,
                 "velocity": velocity,
+                "cost_usd": total_cost,
+                "ceremony_costs": ceremony_costs,
             }),
         )
         .await
@@ -399,6 +415,32 @@ pub async fn run(
         "[sprint-run]".dimmed(),
         satisfied_str
     );
+
+    // Display cost breakdown
+    if total_cost > 0.0 {
+        eprintln!(
+            "{} Sprint cost: {}",
+            "[sprint-run]".dimmed(),
+            format!("${:.2}", total_cost).green().bold()
+        );
+        for r in &results {
+            if let Some(cost) = r.cost_usd {
+                let status_icon = match r.status {
+                    CeremonyStatus::Completed => "✓",
+                    CeremonyStatus::Failed => "✗",
+                    CeremonyStatus::Skipped => "○",
+                    _ => "?",
+                };
+                eprintln!(
+                    "{}   {} {}: ${:.2}",
+                    "[sprint-run]".dimmed(),
+                    status_icon,
+                    r.key,
+                    cost
+                );
+            }
+        }
+    }
 
     // Exit codes for orchestrator:
     // 0 = mission complete (close epic)
