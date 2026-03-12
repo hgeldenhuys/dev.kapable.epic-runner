@@ -58,20 +58,12 @@ pub struct NodeOutcome {
 }
 
 /// Parse SM retro output from LLM response.
+///
+/// Handles: bare JSON, markdown-fenced JSON, JSON with preamble/trailing text.
 pub fn parse_retro(text: Option<&str>) -> Option<RetroOutput> {
     let text = text?;
-    // Try direct parse
-    if let Ok(r) = serde_json::from_str::<RetroOutput>(text) {
-        return Some(r);
-    }
-    // Try stripping markdown fences
-    let stripped = text
-        .trim()
-        .strip_prefix("```json")
-        .or_else(|| text.trim().strip_prefix("```"))
-        .and_then(|s| s.strip_suffix("```"))
-        .unwrap_or(text);
-    serde_json::from_str::<RetroOutput>(stripped.trim()).ok()
+    let value = crate::json_extract::extract_json_object(text)?;
+    serde_json::from_value::<RetroOutput>(value).ok()
 }
 
 /// Detect friction patterns across multiple retros.
@@ -238,6 +230,35 @@ mod tests {
         let r = parse_retro(Some(json)).unwrap();
         assert_eq!(r.went_well, vec!["fast"]);
         assert_eq!(r.friction_points, vec!["slow tests"]);
+    }
+
+    #[test]
+    fn parse_retro_from_markdown_fenced() {
+        let text = "```json\n{\"went_well\":[\"shipped\"],\"friction_points\":[],\"action_items\":[],\"discovered_work\":[],\"observations\":[]}\n```";
+        let r = parse_retro(Some(text)).unwrap();
+        assert_eq!(r.went_well, vec!["shipped"]);
+    }
+
+    #[test]
+    fn parse_retro_from_preamble_and_fenced_json() {
+        let text = "Based on my analysis of the sprint:\n\n```json\n{\"went_well\":[\"fast execution\"],\"friction_points\":[\"flaky tests\"],\"action_items\":[\"stabilize CI\"],\"discovered_work\":[\"new endpoint needed\"],\"observations\":[]}\n```\n\nThese findings should improve the next sprint.";
+        let r = parse_retro(Some(text)).unwrap();
+        assert_eq!(r.went_well, vec!["fast execution"]);
+        assert_eq!(r.friction_points, vec!["flaky tests"]);
+        assert_eq!(r.action_items, vec!["stabilize CI"]);
+        assert_eq!(r.discovered_work, vec!["new endpoint needed"]);
+    }
+
+    #[test]
+    fn parse_retro_from_bare_json_with_preamble() {
+        let text = "Here is the retrospective:\n\n{\"went_well\":[\"good\"],\"friction_points\":[],\"action_items\":[],\"discovered_work\":[],\"observations\":[]}";
+        let r = parse_retro(Some(text)).unwrap();
+        assert_eq!(r.went_well, vec!["good"]);
+    }
+
+    #[test]
+    fn parse_retro_returns_none_for_garbage() {
+        assert!(parse_retro(Some("not json at all")).is_none());
     }
 
     #[test]

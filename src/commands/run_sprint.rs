@@ -523,19 +523,11 @@ async fn save_sprint_learnings(
         None => return,
     };
 
-    // Parse retro JSON output (may be wrapped in markdown code fences)
-    let json_str = output
-        .trim()
-        .strip_prefix("```json")
-        .or_else(|| output.trim().strip_prefix("```"))
-        .unwrap_or(output.trim())
-        .trim_end_matches("```")
-        .trim();
-
-    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "Could not parse retro output as JSON — skipping learnings save");
+    // Parse retro JSON output (may be wrapped in markdown fences, preamble, or trailing text)
+    let parsed: serde_json::Value = match crate::json_extract::extract_json_object(output) {
+        Some(v) => v,
+        None => {
+            tracing::warn!("Could not extract JSON from retro output — skipping learnings save");
             return;
         }
     };
@@ -583,17 +575,9 @@ fn create_backlog_from_retro(
         None => return,
     };
 
-    let json_str = output
-        .trim()
-        .strip_prefix("```json")
-        .or_else(|| output.trim().strip_prefix("```"))
-        .unwrap_or(output.trim())
-        .trim_end_matches("```")
-        .trim();
-
-    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
-        Ok(v) => v,
-        Err(_) => return,
+    let parsed: serde_json::Value = match crate::json_extract::extract_json_object(output) {
+        Some(v) => v,
+        None => return,
     };
 
     let items = match parsed["discovered_work"].as_array() {
@@ -692,15 +676,7 @@ async fn update_product_brief(
 
     // Append latest retro insights
     if let Some(retro) = retro_output {
-        let json_str = retro
-            .trim()
-            .strip_prefix("```json")
-            .or_else(|| retro.trim().strip_prefix("```"))
-            .unwrap_or(retro.trim())
-            .trim_end_matches("```")
-            .trim();
-
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(parsed) = crate::json_extract::extract_json_object(retro) {
             if let Some(patterns) = parsed["patterns_to_codify"].as_array() {
                 if !patterns.is_empty() {
                     brief.push_str("## Patterns & Conventions\n\n");

@@ -6,6 +6,7 @@ pub mod event_sink;
 pub mod executor;
 pub mod flow;
 pub mod impediments;
+pub mod json_extract;
 pub mod judge;
 pub mod repo_resolver;
 pub mod scrum_master;

@@ -35,9 +35,12 @@ Analyze what happened during the sprint ceremony and extract actionable learning
 
 ## Output Format
 
-Output ONLY valid JSON:
+**CRITICAL: Your entire response must be a single JSON object. No preamble, no commentary, no markdown fences. Just the raw JSON.**
 
-```json
+Do NOT write "Here's my analysis:" or wrap in ```json fences. Start with `{` and end with `}`.
+
+Schema:
+
 {
   "went_well": ["What worked and should be repeated"],
   "friction_points": ["What caused delays or frustration"],
@@ -54,4 +57,3 @@ Output ONLY valid JSON:
   "patterns_to_codify": ["Convention that should become a rule"],
   "sprint_health": "healthy|strained|failing"
 }
-```

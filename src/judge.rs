@@ -1,20 +1,12 @@
 use crate::types::JudgeVerdict;
 
 /// Parse a JudgeVerdict from LLM output text.
+///
+/// Handles: bare JSON, markdown-fenced JSON, JSON with preamble/trailing text.
 pub fn parse_verdict(text: Option<&str>) -> Option<JudgeVerdict> {
     let text = text?;
-    // Try direct parse
-    if let Ok(v) = serde_json::from_str::<JudgeVerdict>(text) {
-        return Some(v);
-    }
-    // Try stripping markdown fences
-    let stripped = text
-        .trim()
-        .strip_prefix("```json")
-        .or_else(|| text.trim().strip_prefix("```"))
-        .and_then(|s| s.strip_suffix("```"))
-        .unwrap_or(text);
-    serde_json::from_str::<JudgeVerdict>(stripped.trim()).ok()
+    let value = crate::json_extract::extract_json_object(text)?;
+    serde_json::from_value::<JudgeVerdict>(value).ok()
 }
 
 /// Evaluate intent satisfaction: requires both intent_satisfied AND confidence >= 0.7
@@ -42,6 +34,14 @@ mod tests {
         let text = "```json\n{\"intent_satisfied\":false,\"confidence\":0.3,\"criteria_results\":[],\"summary\":\"Failed\",\"evidence\":[]}\n```";
         let v = parse_verdict(Some(text)).unwrap();
         assert!(!v.intent_satisfied);
+    }
+
+    #[test]
+    fn parse_verdict_from_preamble_and_fenced() {
+        let text = "Here's my verdict:\n\n```json\n{\"intent_satisfied\":true,\"confidence\":0.9,\"criteria_results\":[],\"summary\":\"Good\",\"evidence\":[]}\n```\n\nOverall great sprint.";
+        let v = parse_verdict(Some(text)).unwrap();
+        assert!(v.intent_satisfied);
+        assert_eq!(v.confidence, 0.9);
     }
 
     #[test]
