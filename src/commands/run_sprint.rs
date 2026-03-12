@@ -101,6 +101,75 @@ pub async fn run(
         tracing::warn!(error = %e, "Failed to update sprint status to executing — continuing");
     }
 
+    // 6b. Sync worktree to main BEFORE ceremony starts.
+    // This prevents stale-worktree rework: if the previous sprint merged to main but the
+    // worktree branch wasn't updated, the builder would redo work already on main.
+    // Also catches external commits pushed to main between sprints.
+    {
+        let repo_path = crate::repo_resolver::resolve_product_repo(
+            product.repo_url.as_deref(),
+            &product.repo_path,
+        )
+        .unwrap_or_else(|_| product.repo_path.clone());
+        let wt_path = std::path::Path::new(&repo_path)
+            .join(".claude/worktrees")
+            .join(&epic.code);
+        if wt_path.exists() {
+            // Fetch latest main first (the worktree might not see recent remote commits)
+            let _ = std::process::Command::new("git")
+                .args(["fetch", "origin", "main"])
+                .current_dir(&repo_path)
+                .output();
+
+            let rebase = std::process::Command::new("git")
+                .args(["rebase", "origin/main"])
+                .current_dir(&wt_path)
+                .output();
+            match rebase {
+                Ok(out) if out.status.success() => {
+                    eprintln!(
+                        "{} Synced worktree to origin/main",
+                        "[sprint-run]".dimmed()
+                    );
+                }
+                Ok(out) => {
+                    // Abort failed rebase, fall back to hard reset
+                    let _ = std::process::Command::new("git")
+                        .args(["rebase", "--abort"])
+                        .current_dir(&wt_path)
+                        .output();
+                    let reset = std::process::Command::new("git")
+                        .args(["reset", "--hard", "origin/main"])
+                        .current_dir(&wt_path)
+                        .output();
+                    match reset {
+                        Ok(r) if r.status.success() => {
+                            eprintln!(
+                                "{} Synced worktree to origin/main (via reset)",
+                                "[sprint-run]".dimmed()
+                            );
+                        }
+                        _ => {
+                            let err = String::from_utf8_lossy(&out.stderr);
+                            eprintln!(
+                                "{} Warning: worktree sync failed (non-fatal): {}",
+                                "[sprint-run]".dimmed(),
+                                err
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Warning: worktree sync skipped: {}",
+                        "[sprint-run]".dimmed(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     // Stream sprint started event
     sink.emit(SprintEvent {
         sprint_id: sprint.session_id,
