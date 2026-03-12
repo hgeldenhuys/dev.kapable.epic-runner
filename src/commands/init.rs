@@ -38,6 +38,8 @@ const TABLES: &[&str] = &[
     // v3: backlog-first model
     "backlog_items",
     "sprint_assignments",
+    // v3: agent orientation
+    "research_artifacts",
 ];
 
 pub async fn run(

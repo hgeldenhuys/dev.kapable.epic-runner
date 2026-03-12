@@ -228,6 +228,33 @@ pub async fn run(
         })
         .collect();
 
+    // Compute cost + node stats (used in velocity, metrics, and sprint PATCH)
+    let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
+    let completed_nodes = results
+        .iter()
+        .filter(|r| r.status == CeremonyStatus::Completed)
+        .count();
+
+    // v3: Compute velocity data for sprint capacity planning
+    let stories_planned = sprint
+        .stories
+        .as_ref()
+        .and_then(|s| s.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let stories_completed_count = judge_verdict
+        .as_ref()
+        .and_then(|v| v.stories_completed.as_ref())
+        .map(|sc| sc.len())
+        .unwrap_or(0);
+    let velocity = json!({
+        "stories_planned": stories_planned,
+        "stories_completed": stories_completed_count,
+        "total_cost_usd": total_cost,
+        "nodes_completed": completed_nodes,
+        "mission_progress": judge_verdict.as_ref().and_then(|v| v.mission_progress),
+    });
+
     if let Err(e) = client
         .patch::<_, serde_json::Value>(
             &format!("/v1/er_sprints/{}", sprint.id),
@@ -235,6 +262,7 @@ pub async fn run(
                 "status": final_status,
                 "finished_at": chrono::Utc::now().to_rfc3339(),
                 "ceremony_log": ceremony_log,
+                "velocity": velocity,
             }),
         )
         .await
@@ -262,6 +290,18 @@ pub async fn run(
     if let Some(retro_result) = results.iter().find(|r| r.key == "sm_retro") {
         save_sprint_learnings(client, &epic.code, sprint.number, retro_result).await;
         create_backlog_from_retro(&epic.code, sprint.number, retro_result);
+
+        // v3: Update product brief (PRODUCTS.md) from retro insights + accumulated learnings
+        let learnings = load_previous_learnings(client, &epic.code).await;
+        update_product_brief(
+            client,
+            &epic.product_id.to_string(),
+            &epic.code,
+            sprint.number,
+            retro_result.output.as_deref(),
+            &learnings,
+        )
+        .await;
     }
 
     // 11c. v3: Create delta stories from judge verdict back into backlog
@@ -305,11 +345,7 @@ pub async fn run(
     }
 
     // 12. Emit structured metrics summary (for aggregation + debugging)
-    let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
-    let completed_nodes = results
-        .iter()
-        .filter(|r| r.status == CeremonyStatus::Completed)
-        .count();
+    // (total_cost and completed_nodes already computed above for velocity)
     let failed_nodes = results
         .iter()
         .filter(|r| r.status == CeremonyStatus::Failed)
@@ -566,5 +602,99 @@ fn create_backlog_from_retro(
             sprint_number,
             "Created backlog items from retro discovered_work"
         );
+    }
+}
+
+/// v3: Update the product brief (PRODUCTS.md equivalent) from retro learnings.
+/// The brief is stored on the product record and injected into agent system prompts.
+/// This is the key mechanism for cutting agent orientation cost across sprints.
+async fn update_product_brief(
+    client: &ApiClient,
+    product_id: &str,
+    epic_code: &str,
+    sprint_number: i32,
+    retro_output: Option<&str>,
+    learnings: &str,
+) {
+    // Fetch current product data
+    let product: Result<serde_json::Value, _> =
+        client.get(&format!("/v1/products/{product_id}")).await;
+    let product = match product {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let name = product["name"].as_str().unwrap_or("Unknown");
+    let slug = product["slug"].as_str().unwrap_or("unknown");
+    let description = product["description"].as_str().unwrap_or("");
+    let existing_brief = product["brief"].as_str().unwrap_or("");
+
+    // Build updated brief
+    let mut brief = format!(
+        "# {name}\n\n\
+        **Slug:** {slug}\n\
+        **Description:** {description}\n\n"
+    );
+
+    // Include accumulated learnings
+    if !learnings.is_empty() {
+        brief.push_str("## Key Learnings\n\n");
+        brief.push_str(learnings);
+        brief.push('\n');
+    }
+
+    // Append latest retro insights
+    if let Some(retro) = retro_output {
+        let json_str = retro
+            .trim()
+            .strip_prefix("```json")
+            .or_else(|| retro.trim().strip_prefix("```"))
+            .unwrap_or(retro.trim())
+            .trim_end_matches("```")
+            .trim();
+
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(patterns) = parsed["patterns_to_codify"].as_array() {
+                if !patterns.is_empty() {
+                    brief.push_str("## Patterns & Conventions\n\n");
+                    for p in patterns {
+                        if let Some(text) = p.as_str() {
+                            brief.push_str(&format!("- {text}\n"));
+                        }
+                    }
+                    brief.push('\n');
+                }
+            }
+        }
+    }
+
+    // Add changelog entry
+    let changelog_entry = json!({
+        "epic_code": epic_code,
+        "sprint_number": sprint_number,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "summary": format!("Sprint {} of {}", sprint_number, epic_code),
+    });
+
+    // Merge with existing changelog (append, keep last 20)
+    let mut changelog: Vec<serde_json::Value> =
+        product["changelog"].as_array().cloned().unwrap_or_default();
+    changelog.push(changelog_entry);
+    if changelog.len() > 20 {
+        changelog = changelog.split_off(changelog.len() - 20);
+    }
+
+    // Only update if brief actually changed
+    if brief.trim() != existing_brief.trim() {
+        let _ = client
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/products/{product_id}"),
+                &json!({
+                    "brief": brief,
+                    "changelog": changelog,
+                }),
+            )
+            .await;
+        tracing::info!(product_id, "Updated product brief (PRODUCTS.md)");
     }
 }

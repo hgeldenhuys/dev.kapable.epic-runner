@@ -174,6 +174,9 @@ pub struct Sprint {
     pub stories: Option<serde_json::Value>,
     pub ceremony_log: Option<serde_json::Value>,
     pub rubber_duck_insights: Option<serde_json::Value>,
+    /// v3: Sprint velocity — {stories_planned, stories_completed, context_windows_used}
+    #[serde(default)]
+    pub velocity: Option<serde_json::Value>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -444,5 +447,40 @@ impl std::fmt::Display for AssignmentStatus {
             AssignmentStatus::Deferred => "deferred",
         };
         write!(f, "{s}")
+    }
+}
+
+// ── Research Artifact (v3) ────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchArtifact {
+    pub id: Uuid,
+    pub product_id: Uuid,
+    /// Optional — can be product-wide or epic-scoped
+    pub epic_code: Option<String>,
+    /// JSON: files, patterns, dependencies, conventions discovered
+    pub content: serde_json::Value,
+    /// Refresh after N sprints (default 3)
+    #[serde(default = "default_staleness_ttl")]
+    pub staleness_ttl_sprints: i32,
+    pub created_at: DateTime<Utc>,
+    pub refreshed_at: Option<DateTime<Utc>>,
+}
+
+fn default_staleness_ttl() -> i32 {
+    3
+}
+
+// ── Context Capacity ──────────────────────────
+
+/// T-shirt size to context fraction mapping for sprint capacity planning.
+pub fn size_to_context_fraction(size: &str) -> f64 {
+    match size.to_lowercase().as_str() {
+        "xs" => 0.125, // 1/8 context window
+        "s" => 0.25,   // 1/4 context window
+        "m" => 0.5,    // 1/2 context window
+        "l" => 1.0,    // 1 full context window
+        "xl" => 2.0,   // Too big for one sprint — break down
+        _ => 0.5,      // Default to medium
     }
 }
