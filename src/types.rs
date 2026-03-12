@@ -142,22 +142,44 @@ fn default_action_item_status() -> String {
 
 // ── Definition of Done Check Item ───────────────
 
-/// A single item in a product-level definition of done checklist.
-/// The judge evaluates each story against these before marking done.
+/// A single item in a product-level definition of done.
+/// The judge evaluates each story/sprint against these conditional rules.
+///
+/// This is a rule engine, not a flat checklist. Each check has a condition
+/// (`applies_when`) so the judge only enforces it when relevant — e.g.,
+/// "cargo clippy" only runs when Rust files changed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoDCheckItem {
-    /// The check description (e.g. "All tests pass")
-    pub check: String,
-    /// How to verify (shell command or manual step)
+    /// Human-readable rule name (e.g. "Unit Tests Pass")
+    pub name: String,
+    /// What this check verifies (context for the judge)
+    pub description: String,
+    /// Category: code_quality, testing, deployment, documentation, process
+    #[serde(default = "default_category")]
+    pub category: String,
+    /// When does this check apply? If None, always applies.
+    /// Patterns: "files_match:src/**/*.rs", "files_match:app/**/*.tsx",
+    ///           "story_has_tag:frontend", "always"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applies_when: Option<String>,
+    /// How to verify — shell command, agent action, or manual step
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<String>,
-    /// Is this check required (vs advisory)?
+    /// Hard gate (must pass) vs advisory (judge decides)
     #[serde(default = "default_true")]
     pub required: bool,
+    /// Can this check be consolidated across stories in a sprint?
+    /// e.g., one browser smoke test for 5 frontend stories
+    #[serde(default)]
+    pub consolidatable: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_category() -> String {
+    "code_quality".to_string()
 }
 
 // ── Story (Backlog Item) ───────────────────────
