@@ -172,7 +172,7 @@ impl EventSink {
         });
 
         match client
-            .post::<_, serde_json::Value>("/v1/sprint_artifacts", &payload)
+            .post::<_, serde_json::Value>("/v1/sprint-artifacts/finalize", &payload)
             .await
         {
             Ok(_) => tracing::info!(artifact_type, node_key, "Artifact finalized"),
@@ -305,6 +305,7 @@ pub(crate) fn extract_artifact_info(
 
     // Build content JSONB from the node result
     let mut content = json!({
+        "schema_version": "1",
         "status": format!("{:?}", result.status),
         "cost_usd": result.cost_usd,
     });

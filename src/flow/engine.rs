@@ -313,6 +313,7 @@ pub async fn execute_flow(
         }
     }
     ceremony_costs.insert("total".to_string(), serde_json::json!(total_cost));
+    ceremony_costs.insert("schema_version".to_string(), serde_json::json!("1"));
 
     sink.finalize_artifact(
         client,
@@ -323,6 +324,50 @@ pub async fn execute_flow(
         "Ceremony Cost Breakdown",
         Some(&format!("Total: ${:.2}", total_cost)),
         serde_json::Value::Object(ceremony_costs),
+    )
+    .await;
+
+    // Finalize sprint-level velocity artifact
+    let stories_planned = ctx
+        .sprint
+        .stories
+        .as_ref()
+        .and_then(|s| s.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let stories_completed_count = ordered
+        .iter()
+        .find(|r| r.key == "judge")
+        .and_then(|r| r.judge_verdict.as_ref())
+        .and_then(|v| v.stories_completed.as_ref())
+        .map(|sc| sc.len())
+        .unwrap_or(0);
+    let completed_nodes = ordered
+        .iter()
+        .filter(|r| r.status == CeremonyStatus::Completed)
+        .count();
+
+    let velocity_content = serde_json::json!({
+        "schema_version": "1",
+        "stories_planned": stories_planned,
+        "stories_completed": stories_completed_count,
+        "points_completed": stories_completed_count,
+        "total_cost_usd": total_cost,
+        "nodes_completed": completed_nodes,
+    });
+
+    sink.finalize_artifact(
+        client,
+        ctx.sprint.session_id,
+        &ctx.epic.code,
+        "velocity",
+        "flow_engine",
+        "Sprint Velocity",
+        Some(&format!(
+            "{}/{} stories completed",
+            stories_completed_count, stories_planned
+        )),
+        velocity_content,
     )
     .await;
 
@@ -796,10 +841,16 @@ async fn execute_deploy_node(
             let err = String::from_utf8_lossy(&reset.stderr);
             tracing::warn!("Failed to sync worktree to main (non-fatal): {}", err);
         } else {
-            tracing::info!("Synced {} to main HEAD via reset — next sprint starts fresh", worktree_branch);
+            tracing::info!(
+                "Synced {} to main HEAD via reset — next sprint starts fresh",
+                worktree_branch
+            );
         }
     } else {
-        tracing::info!("Synced {} to main HEAD via rebase — next sprint starts fresh", worktree_branch);
+        tracing::info!(
+            "Synced {} to main HEAD via rebase — next sprint starts fresh",
+            worktree_branch
+        );
     }
 
     // Step 4: Trigger Connect App Pipeline
