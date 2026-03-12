@@ -4,6 +4,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use uuid::Uuid;
 
+use crate::agents;
 use crate::stream::{self, StreamEvent};
 use crate::types::{SprintEvent, SprintEventType};
 
@@ -64,7 +65,14 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     }
 
     if let Some(agent) = &config.agent {
-        cmd.arg("--agent").arg(agent);
+        // Resolve agent name to absolute path (checks repo override, then embedded)
+        let repo = std::path::Path::new(&config.repo_path);
+        if let Some(agent_path) = agents::resolve_agent_path(agent, repo) {
+            cmd.arg("--agent").arg(agent_path);
+        } else {
+            // Fall back to bare name (let Claude Code resolve it)
+            cmd.arg("--agent").arg(agent);
+        }
     }
     if config.brief {
         cmd.arg("--brief");

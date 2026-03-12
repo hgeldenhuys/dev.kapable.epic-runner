@@ -110,7 +110,15 @@ fn build_command_with_agent() {
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert!(args.contains(&"--agent".to_string()));
-    assert!(args.contains(&"rubber-duck".to_string()));
+    // Agent name is resolved to an absolute path (embedded → temp dir)
+    let agent_arg = args
+        .iter()
+        .find(|a| a.contains("rubber-duck"))
+        .expect("Should have an arg containing rubber-duck");
+    assert!(
+        agent_arg.ends_with("rubber-duck.md"),
+        "Agent path should end with rubber-duck.md, got: {agent_arg}"
+    );
     assert!(args.contains(&"--allowed-tools".to_string()));
     assert!(args.contains(&"Read,Glob".to_string()));
 }

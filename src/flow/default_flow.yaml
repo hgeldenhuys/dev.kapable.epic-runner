@@ -1,5 +1,5 @@
 name: "Default Sprint Ceremony"
-version: "2.2.0"
+version: "2.3.0"
 description: |
   Full autonomous ceremony with A/B blue-green deploy:
   research → groom → execute → code judge → deploy to STANDBY → A/B judge → promote.
@@ -8,6 +8,7 @@ description: |
   If judge passes: promote standby to primary (zero-downtime swap).
   If judge fails: standby stays dormant (automatic rollback — no action needed).
   Gates short-circuit on failure. SM retro always runs.
+  v2.3: Dedicated agent definitions per ceremony role.
 
 nodes:
   - key: source
@@ -24,27 +25,10 @@ nodes:
       budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
-      allowed_tools:
-        - Read
-        - Glob
-        - Grep
-        - "Bash(git *)"
-        - "Bash(ls *)"
-        - WebSearch
-        - WebFetch
+      agent: researcher
       system_prompt: |
-        You are a research agent. Read-only. Do NOT edit files.
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
-
-        Output ONLY valid JSON matching this schema:
-        {
-          "files": ["path/to/relevant/file.rs:42"],
-          "patterns": ["Pattern description with file references"],
-          "dependencies": ["External dep or internal module dependency"],
-          "blockers": ["Potential blocker description"],
-          "conventions": ["Key convention from CLAUDE.md that applies"]
-        }
       prompt: |
         Research the codebase for epic {{epic.code}}. Find all relevant files,
         existing patterns, dependencies, and potential blockers.
@@ -67,28 +51,9 @@ nodes:
       budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
+      agent: groomer
       system_prompt: |
-        You are a scrum master grooming stories for epic {{epic.code}}.
-        Apply Definition of Ready:
-        - Feature parity checked against existing code
-        - Auth model specified (if applicable)
-        - Acceptance criteria describe real user scenarios
-        - Dependencies identified
-        - Test plan defined
-        - Scope bounded (completable in one session)
-
-        Output ONLY valid JSON array matching this schema:
-        [
-          {
-            "id": "story-uuid",
-            "title": "Story title",
-            "acceptance_criteria": ["AC 1: Given X, When Y, Then Z"],
-            "file_paths": ["src/path/to/file.rs:42"],
-            "points": 3,
-            "dependencies": ["other-story-id or blocker"],
-            "test_plan": "How to verify this story"
-          }
-        ]
+        Grooming stories for epic {{epic.code}}.
       prompt: |
         Groom the backlog stories for epic {{epic.code}}:
         {{input}}
@@ -119,27 +84,15 @@ nodes:
       heartbeat_timeout_secs: 300
       loop_max: 5
       rubber_duck_after: 2
+      agent: builder
       system_prompt: |
-        You are a senior developer executing sprint {{sprint.number}} of epic {{epic.code}}.
+        Executing sprint {{sprint.number}} of epic {{epic.code}}.
         Intent: {{epic.intent}}
 
         Project conventions:
         {{repo.claude_md}}
 
-        Definition of Done — you MUST satisfy before finishing:
-        - bun run build passes (zero errors)
-        - All tests pass
-        - Commit after each completed story
-        - Test in Chrome MCP — verify the feature works visually
-
         {{previous_learnings}}
-
-        Rules:
-        - Execute autonomously — no confirmations
-        - Run tests after EVERY change, not just at the end
-        - If blocked by another epic, say exactly: 'blocked by <EPIC_CODE>'
-        - If a test fails, fix it before moving on
-        - Commit your work with descriptive messages
 
         Stories for this sprint:
         {{stories}}
@@ -166,35 +119,12 @@ nodes:
       budget_usd: 2.0
       chrome: false
       heartbeat_timeout_secs: 180
-      allowed_tools:
-        - Read
-        - Glob
-        - Grep
-        - "Bash(git *)"
-        - "Bash(bun *)"
-        - "Bash(ls *)"
+      agent: code-judge
       system_prompt: |
-        You are an independent code quality judge for sprint {{sprint.number}} of epic {{epic.code}}.
-        You are NOT the developer — you are a reviewer verifying the work is deploy-ready.
+        Judging sprint {{sprint.number}} of epic {{epic.code}}.
 
         Project conventions:
         {{repo.claude_md}}
-
-        INSTRUCTIONS (execute ALL of these):
-        1. Run `git diff main..HEAD --stat` to see what files changed
-        2. Run `bun run build` to verify the build passes
-        3. Review the diff for obvious issues (broken imports, missing routes, syntax errors)
-        4. Check that new route files are registered in app/routes.ts
-        5. Verify no secrets or credentials are committed
-
-        Output ONLY valid JSON:
-        {
-          "build_passes": bool,
-          "files_changed": ["list of modified files"],
-          "issues": ["Any problems found — empty if clean"],
-          "deploy_ready": bool,
-          "summary": "Brief assessment"
-        }
       prompt: |
         Review the code changes for sprint {{sprint.number}} of epic {{epic.code}}.
         Verify the build passes and the code is ready to deploy.
@@ -234,47 +164,13 @@ nodes:
       budget_usd: 3.0
       chrome: true
       heartbeat_timeout_secs: 300
+      agent: ab-judge
       system_prompt: |
-        You are an independent A/B judge comparing the NEW deployment (standby)
-        against the CURRENT live production. You are NOT reviewing code — you are
-        an end user testing both versions side by side.
-
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
         Success criteria: {{epic.success_criteria}}
 
         {{deploy_output}}
-
-        INSTRUCTIONS:
-        1. Open the PRODUCTION URL in Chrome — take a screenshot as baseline
-        2. Open the STANDBY URL in Chrome — take a screenshot of the new version
-        3. Compare both versions visually:
-           - Does the standby version show the sprint's changes?
-           - Are there any visual regressions compared to production?
-           - Does navigation, layout, and interactivity work on standby?
-        4. Verify each success criterion against the STANDBY version
-        5. Test user interactions (clicks, navigation, forms) on standby
-        6. Compare error console between both versions
-
-        DECISION CRITERIA:
-        - If standby is BETTER or EQUAL to production → approve promotion
-        - If standby has regressions vs production → reject promotion
-        - If standby is not reachable → reject promotion
-
-        Output ONLY valid JSON:
-        {
-          "promote": bool,
-          "confidence": 0.0-1.0,
-          "production_status": "healthy|degraded|down",
-          "standby_status": "healthy|degraded|down",
-          "criteria_results": [
-            {"criterion": "...", "met": bool, "evidence": "what you saw"}
-          ],
-          "regressions": ["Any regressions found on standby vs production"],
-          "improvements": ["Improvements visible on standby vs production"],
-          "summary": "Overall A/B comparison assessment",
-          "evidence": ["screenshot descriptions"]
-        }
       prompt: |
         A/B judge sprint {{sprint.number}} of epic {{epic.code}}.
 
@@ -317,26 +213,9 @@ nodes:
       budget_usd: 2.0
       chrome: false
       heartbeat_timeout_secs: 180
+      agent: scrum-master
       system_prompt: |
-        You are the Scrum Master observer for epic {{epic.code}}.
-
-        Output ONLY valid JSON matching this schema:
-        {
-          "went_well": ["What worked and should be repeated"],
-          "friction_points": ["What caused delays or frustration"],
-          "action_items": ["Concrete improvement to make"],
-          "discovered_work": ["New backlog items found during execution"],
-          "observations": [
-            {
-              "category": "process|technical|quality|velocity",
-              "description": "What was observed",
-              "severity": "low|medium|high",
-              "action_item": "What to do about it"
-            }
-          ],
-          "patterns_to_codify": ["Convention that should become a rule"],
-          "sprint_health": "healthy|strained|failing"
-        }
+        Sprint {{sprint.number}} retro for {{epic.code}}.
       prompt: |
         Sprint {{sprint.number}} retro for {{epic.code}}.
 

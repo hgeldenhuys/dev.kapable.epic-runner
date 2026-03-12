@@ -20,6 +20,7 @@ Rust CLI for epic-scoped autonomous sprint execution on the Kapable platform.
 src/
   main.rs              # CLI entry (clap derive)
   lib.rs               # Library crate (all modules)
+  agents.rs            # Embedded agent definitions (include_str! + temp dir resolution)
   api_client.rs        # Kapable Data API client (x-api-key auth, Clone)
   event_sink.rs        # Real-time ceremony event streaming (mpsc → DB)
   config.rs            # TOML config with project walk
@@ -32,7 +33,7 @@ src/
   impediments.rs       # Cross-epic blocker queries
   flow/
     definition.rs      # CeremonyFlow, CeremonyNode types
-    default_flow.yaml  # 11-node ceremony DAG (embedded via include_str!)
+    default_flow.yaml  # 17-node ceremony DAG (embedded via include_str!)
     engine.rs          # Kahn's BFS executor with gate skipping
     loader.rs          # Flow loading cascade (file → config → embedded)
   commands/
@@ -48,8 +49,14 @@ src/
     retro.rs           # Retrospective (standalone)
     impediment.rs      # Impediment management
     status.rs          # Dashboard
-agents/
-  rubber-duck.md       # Stuck-state debugging agent (haiku)
+agents/                  # Claude Code agent definitions (embedded in binary)
+  researcher.md        # Read-only codebase research (sonnet)
+  groomer.md           # Story grooming with DoR (sonnet)
+  builder.md           # Sprint execution (opus)
+  code-judge.md        # Code quality review (sonnet)
+  ab-judge.md          # Chrome-based A/B comparison (sonnet)
+  scrum-master.md      # Retrospective analysis (sonnet)
+  rubber-duck.md       # Stuck-state debugging (haiku)
 tests/                 # Integration tests
 ```
 
