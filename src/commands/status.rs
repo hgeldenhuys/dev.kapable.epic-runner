@@ -10,6 +10,10 @@ pub struct StatusArgs {
     /// Product slug to show status for (all products if omitted)
     #[arg(long)]
     pub product: Option<String>,
+
+    /// Show verbose sprint details (velocity, goals, assignments)
+    #[arg(long, short)]
+    pub verbose: bool,
 }
 
 pub async fn run(
@@ -24,6 +28,15 @@ pub async fn run(
     let all_sprints: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/er_sprints").await?;
     let all_impediments: DataWrapper<Vec<serde_json::Value>> =
         client.get("/v1/impediments").await?;
+    // v3: Load backlog items and sprint assignments (best-effort — tables may not exist yet)
+    let all_backlog: DataWrapper<Vec<serde_json::Value>> = client
+        .get("/v1/backlog_items")
+        .await
+        .unwrap_or(DataWrapper { data: vec![] });
+    let all_assignments: DataWrapper<Vec<serde_json::Value>> = client
+        .get("/v1/sprint_assignments")
+        .await
+        .unwrap_or(DataWrapper { data: vec![] });
 
     // Filter products by slug if specified
     let products: Vec<&serde_json::Value> = all_products
@@ -169,8 +182,101 @@ pub async fn run(
                     "executing" => "▶".yellow().to_string(),
                     _ => "?".dimmed().to_string(),
                 };
-                eprintln!("    {} Sprint {} — {}", status_icon, num, status);
+
+                // v3: Show velocity data inline
+                let velocity_str = if let Some(vel) = sprint.get("velocity") {
+                    let planned = vel["stories_planned"].as_i64().unwrap_or(0);
+                    let completed = vel["stories_completed"].as_i64().unwrap_or(0);
+                    let cost = vel["total_cost_usd"].as_f64().unwrap_or(0.0);
+                    let progress = vel["mission_progress"].as_f64();
+                    let mut parts = vec![format!("{completed}/{planned} stories")];
+                    if cost > 0.0 {
+                        parts.push(format!("${cost:.2}"));
+                    }
+                    if let Some(p) = progress {
+                        parts.push(format!("{:.0}% mission", p * 100.0));
+                    }
+                    format!(" ({})", parts.join(", "))
+                } else {
+                    String::new()
+                };
+
+                eprintln!(
+                    "    {} Sprint {} — {}{}",
+                    status_icon,
+                    num,
+                    status,
+                    velocity_str.dimmed()
+                );
+
+                // v3: Show sprint goal in verbose mode
+                if args.verbose {
+                    if let Some(goal) = sprint["goal"].as_str() {
+                        eprintln!("      {}: {}", "Goal".dimmed(), goal);
+                    }
+                    // Show assignments for this sprint
+                    let sprint_id = sprint["id"].as_str().unwrap_or("");
+                    let assignments: Vec<&serde_json::Value> = all_assignments
+                        .data
+                        .iter()
+                        .filter(|a| a["sprint_id"].as_str() == Some(sprint_id))
+                        .collect();
+                    if !assignments.is_empty() {
+                        for a in &assignments {
+                            let a_status = a["status"].as_str().unwrap_or("?");
+                            let item_id = a["backlog_item_id"].as_str().unwrap_or("?");
+                            // Try to find the backlog item title
+                            let title = all_backlog
+                                .data
+                                .iter()
+                                .find(|b| b["id"].as_str() == Some(item_id))
+                                .and_then(|b| b["title"].as_str())
+                                .unwrap_or(item_id);
+                            let a_icon = match a_status {
+                                "completed" => "✓".green().to_string(),
+                                "in_progress" => "▶".yellow().to_string(),
+                                "deferred" => "⊘".dimmed().to_string(),
+                                _ => "·".dimmed().to_string(),
+                            };
+                            eprintln!("      {} {} — {}", a_icon, title, a_status.dimmed());
+                        }
+                    }
+                }
             }
+        }
+
+        // v3: Backlog summary
+        let product_backlog: Vec<&serde_json::Value> = all_backlog
+            .data
+            .iter()
+            .filter(|b| b["product_id"].as_str() == Some(pid))
+            .collect();
+        if !product_backlog.is_empty() {
+            let draft = product_backlog
+                .iter()
+                .filter(|b| b["status"].as_str() == Some("draft"))
+                .count();
+            let refined = product_backlog
+                .iter()
+                .filter(|b| b["status"].as_str() == Some("refined"))
+                .count();
+            let ready = product_backlog
+                .iter()
+                .filter(|b| b["status"].as_str() == Some("ready"))
+                .count();
+            let done = product_backlog
+                .iter()
+                .filter(|b| b["status"].as_str() == Some("done"))
+                .count();
+            eprintln!(
+                "\n  {} {} items — {} draft, {} refined, {} ready, {} done",
+                "Backlog:".bold(),
+                product_backlog.len(),
+                draft.to_string().dimmed(),
+                refined.to_string().yellow(),
+                ready.to_string().green(),
+                done.to_string().cyan(),
+            );
         }
 
         // Open impediments
