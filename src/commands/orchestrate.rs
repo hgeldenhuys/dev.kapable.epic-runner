@@ -120,8 +120,20 @@ pub async fn run(
         return Ok(());
     }
 
-    // 3. Sprint loop
-    for sprint_num in 1..=args.max_sprints {
+    // 3. Determine starting sprint number from existing sprints
+    let existing_sprints: DataWrapper<Vec<serde_json::Value>> =
+        client.get("/v1/er_sprints").await?;
+    let max_existing = existing_sprints
+        .data
+        .iter()
+        .filter(|s| s["epic_id"].as_str() == Some(&epic.id.to_string()))
+        .filter_map(|s| s["number"].as_i64())
+        .max()
+        .unwrap_or(0) as i32;
+
+    // Sprint loop — start numbering after the highest existing sprint
+    for i in 1..=args.max_sprints {
+        let sprint_num = max_existing + i;
         eprintln!(
             "\n{}",
             format!("═══ SPRINT {sprint_num} of epic {} ═══", epic.code)
