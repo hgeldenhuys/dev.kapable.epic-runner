@@ -16,11 +16,11 @@ nodes:
 
   - key: research
     node_type: harness
-    label: "Research (read-only)"
+    label: "External Research"
     config:
-      model: sonnet
+      model: haiku
       effort: low
-      budget_usd: 1.0
+      budget_usd: 0.5
       chrome: false
       heartbeat_timeout_secs: 180
       max_turns: 15
@@ -29,10 +29,17 @@ nodes:
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
       prompt: |
-        Research the codebase for epic {{epic.code}}. Find all relevant files,
-        existing patterns, dependencies, and potential blockers.
-        Project conventions (from CLAUDE.md):
-        {{repo.claude_md}}
+        Research external sources for epic {{epic.code}}: "{{epic.title}}"
+        Intent: {{epic.intent}}
+
+        Search the web for relevant patterns, libraries, best practices, and prior art.
+        Look at how other tools/products solve the same problem.
+        Check for existing standards or conventions to follow.
+
+        Write your findings to .epic-runner/research/{{epic.code}}/findings.md
+        If that file already exists from a previous sprint, read it first and augment — don't redo work.
+
+        Output ONLY the file path you wrote to.
 
   - key: groom
     node_type: harness
@@ -43,17 +50,22 @@ nodes:
       budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
-      max_turns: 15
+      max_turns: 10
       agent: groomer
       system_prompt: |
         Grooming stories for epic {{epic.code}}.
+        Project conventions (from CLAUDE.md):
+        {{repo.claude_md}}
       prompt: |
-        Groom the backlog stories for epic {{epic.code}}:
-        {{input}}
+        Groom the backlog stories for epic {{epic.code}}.
 
-        Research findings above. For each story:
-        1. Add specific, testable acceptance criteria (Given/When/Then)
-        2. Add file paths and line numbers from the research
+        Research findings are at .epic-runner/research/{{epic.code}}/findings.md — read that file for external context (libraries, best practices, prior art).
+
+        You are responsible for codebase exploration. Find relevant files, patterns, and line numbers for each story.
+
+        For each story:
+        1. Explore the codebase — find specific files and line numbers for modification points
+        2. Add specific, testable acceptance criteria (Given/When/Then)
         3. Estimate story points (1/2/3/5/8)
         4. List dependencies between stories
         5. Define test plan (what command verifies it works)

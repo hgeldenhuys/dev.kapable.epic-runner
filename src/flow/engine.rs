@@ -116,6 +116,10 @@ pub async fn execute_flow(
         );
     }
 
+    // Ensure research directory exists for the researcher agent
+    let research_dir = format!("{}/.epic-runner/research/{}", ctx.repo_path, ctx.epic.code);
+    std::fs::create_dir_all(&research_dir).ok();
+
     // Kahn's BFS — seed queue with zero-degree nodes (that aren't already completed)
     let mut queue: VecDeque<String> = VecDeque::new();
     for (key, deg) in &in_deg {
