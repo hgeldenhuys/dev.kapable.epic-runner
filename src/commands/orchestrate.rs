@@ -19,13 +19,15 @@ pub struct OrchestrateArgs {
     #[arg(long, default_value = "20")]
     pub max_sprints: i32,
 
-    /// Model override for all ceremonies
-    #[arg(long, default_value = "opus")]
-    pub model: String,
+    /// Model override for ALL ceremonies (overrides per-node YAML models).
+    /// When omitted, each ceremony node uses its own model from the flow YAML.
+    #[arg(long)]
+    pub model: Option<String>,
 
-    /// Effort override
-    #[arg(long, default_value = "max")]
-    pub effort: String,
+    /// Effort override for ALL ceremonies (overrides per-node YAML effort).
+    /// When omitted, each ceremony node uses its own effort from the flow YAML.
+    #[arg(long)]
+    pub effort: Option<String>,
 
     /// Additional directories to add
     #[arg(long)]
@@ -44,7 +46,7 @@ pub struct OrchestrateArgs {
     pub dry_run: bool,
 
     /// Sprint timeout in minutes (kills runaway sprint processes)
-    #[arg(long, default_value = "60")]
+    #[arg(long, default_value = "90")]
     pub sprint_timeout: u64,
 }
 
@@ -299,8 +301,14 @@ pub async fn run(
         tracing::info!(sprint_id, sprint_num, "Spawning sprint-run child process");
         let mut cmd = std::process::Command::new(&exe_snapshot);
         cmd.arg("sprint-run").arg(sprint_id);
-        cmd.arg("--model").arg(&args.model);
-        cmd.arg("--effort").arg(&args.effort);
+        // Only pass --model/--effort when user explicitly overrides.
+        // When omitted, sprint-run uses per-node models from the flow YAML.
+        if let Some(model) = &args.model {
+            cmd.arg("--model").arg(model);
+        }
+        if let Some(effort) = &args.effort {
+            cmd.arg("--effort").arg(effort);
+        }
         for dir in &args.add_dir {
             cmd.arg("--add-dir").arg(dir);
         }
@@ -316,8 +324,17 @@ pub async fn run(
         let timeout_mins = args.sprint_timeout;
         let timeout_duration = std::time::Duration::from_secs(timeout_mins * 60);
 
-        // Wait with timeout — prevents runaway processes from burning unlimited credits
-        let exit_code = match wait_with_timeout(&mut child, timeout_duration) {
+        // Wait with timeout + outward heartbeat — prevents runaway processes from burning
+        // unlimited credits AND keeps the sprint's heartbeat_at field fresh in the DB so
+        // external observers (console UI) can detect zombie sprints.
+        let exit_code = match wait_with_heartbeat(
+            &mut child,
+            timeout_duration,
+            client,
+            sprint_id,
+        )
+        .await
+        {
             Ok(status) => status.code().unwrap_or(-1),
             Err(_) => {
                 eprintln!(
@@ -980,51 +997,85 @@ async fn load_retro_for_sprint(
 }
 
 /// Clean up stale sprints from previous crashed orchestrator runs.
-/// Any sprint in "executing" or "planning" status with no active process is marked "cancelled".
+///
+/// Two-pass cleanup:
+/// 1. **Epic-scoped**: Any sprint for THIS epic in "executing"/"planning" status → cancelled.
+///    These are definitely stale because we're the orchestrator for this epic.
+/// 2. **Cross-epic heartbeat**: Any sprint in "executing" with heartbeat_at > 5 minutes old
+///    (or no heartbeat_at) → cancelled. Catches zombie sprints from other epics.
 async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
-    let all_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+    // Pass 1: Epic-scoped cleanup (same as before — all stuck sprints for this epic)
+    let epic_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
         .get_with_params("/v1/er_sprints", &[("epic_id", epic_id)])
         .await;
-    let sprints = match all_sprints {
-        Ok(d) => d.data,
-        Err(_) => return,
-    };
-
     let mut cleaned = 0;
-    for sprint in &sprints {
-        if sprint["epic_id"].as_str() != Some(epic_id) {
-            continue;
-        }
-        let status = sprint["status"].as_str().unwrap_or("");
-        if status != "executing" && status != "planning" {
-            continue;
-        }
-        // This sprint is stuck — mark it as cancelled (externally interrupted)
-        let sprint_id = match sprint["id"].as_str() {
-            Some(id) => id,
-            None => continue,
-        };
-        let number = sprint["number"].as_i64().unwrap_or(0);
 
-        if let Err(e) = client
-            .patch::<_, serde_json::Value>(
-                &format!("/v1/er_sprints/{sprint_id}"),
-                &json!({
-                    "status": "cancelled",
-                    "finished_at": chrono::Utc::now().to_rfc3339(),
-                }),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, sprint_id, "Failed to clean up stale sprint");
-        } else {
-            cleaned += 1;
-            eprintln!(
-                "{} Cleaned up stale sprint {} (was {})",
-                "[cleanup]".dimmed(),
-                format!("#{number}").yellow(),
-                status.red(),
-            );
+    if let Ok(resp) = epic_sprints {
+        for sprint in &resp.data {
+            if sprint["epic_id"].as_str() != Some(epic_id) {
+                continue;
+            }
+            let status = sprint["status"].as_str().unwrap_or("");
+            if status != "executing" && status != "planning" {
+                continue;
+            }
+            if cancel_stale_sprint(client, sprint, "epic-scoped").await {
+                cleaned += 1;
+            }
+        }
+    }
+
+    // Pass 2: Cross-epic heartbeat-based cleanup
+    // Fetch ALL executing sprints and check heartbeat freshness
+    let all_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params("/v1/er_sprints", &[("status", "executing")])
+        .await;
+
+    if let Ok(resp) = all_sprints {
+        let now = chrono::Utc::now();
+        let stale_threshold = chrono::Duration::minutes(5);
+
+        for sprint in &resp.data {
+            let status = sprint["status"].as_str().unwrap_or("");
+            if status != "executing" {
+                continue; // server may ignore the filter
+            }
+            // Skip this epic's sprints — already handled in pass 1
+            if sprint["epic_id"].as_str() == Some(epic_id) {
+                continue;
+            }
+
+            let is_stale = match sprint["heartbeat_at"].as_str() {
+                Some(ts) => {
+                    if let Ok(heartbeat) = chrono::DateTime::parse_from_rfc3339(ts) {
+                        now.signed_duration_since(heartbeat.with_timezone(&chrono::Utc))
+                            > stale_threshold
+                    } else {
+                        true // unparseable timestamp = stale
+                    }
+                }
+                None => {
+                    // No heartbeat at all — check started_at.
+                    // If started >10 min ago with no heartbeat, it's a pre-heartbeat zombie.
+                    match sprint["started_at"].as_str() {
+                        Some(ts) => {
+                            if let Ok(started) = chrono::DateTime::parse_from_rfc3339(ts) {
+                                now.signed_duration_since(started.with_timezone(&chrono::Utc))
+                                    > chrono::Duration::minutes(10)
+                            } else {
+                                true
+                            }
+                        }
+                        None => true, // no started_at either = definitely stale
+                    }
+                }
+            };
+
+            if is_stale
+                && cancel_stale_sprint(client, sprint, "stale-heartbeat").await
+            {
+                cleaned += 1;
+            }
         }
     }
 
@@ -1037,14 +1088,65 @@ async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
     }
 }
 
-/// Wait for a child process with a timeout.
+/// Cancel a single stale sprint. Returns true if successfully cancelled.
+async fn cancel_stale_sprint(
+    client: &ApiClient,
+    sprint: &serde_json::Value,
+    reason: &str,
+) -> bool {
+    let sprint_id = match sprint["id"].as_str() {
+        Some(id) => id,
+        None => return false,
+    };
+    let number = sprint["number"].as_i64().unwrap_or(0);
+    let status = sprint["status"].as_str().unwrap_or("unknown");
+    let epic_id = sprint["epic_id"].as_str().unwrap_or("?");
+
+    if let Err(e) = client
+        .patch::<_, serde_json::Value>(
+            &format!("/v1/er_sprints/{sprint_id}"),
+            &json!({
+                "status": "cancelled",
+                "finished_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, sprint_id, "Failed to clean up stale sprint");
+        false
+    } else {
+        eprintln!(
+            "{} Cleaned up stale sprint #{} (was {}, reason: {}, epic: {})",
+            "[cleanup]".dimmed(),
+            number.to_string().yellow(),
+            status.red(),
+            reason,
+            &epic_id[..8.min(epic_id.len())],
+        );
+        true
+    }
+}
+
+/// Wait for a child process with a timeout, emitting a DB heartbeat every ~30 seconds.
+///
+/// The heartbeat PATCHes `heartbeat_at` on the sprint record so that external observers
+/// (console UI, other orchestrators) can detect zombie sprints. If a sprint's heartbeat_at
+/// is older than 5 minutes, it's considered dead and can be cleaned up.
+///
 /// Returns Ok(ExitStatus) if the process exits within the timeout, Err(()) if it times out.
-fn wait_with_timeout(
+async fn wait_with_heartbeat(
     child: &mut std::process::Child,
     timeout: std::time::Duration,
+    client: &ApiClient,
+    sprint_id: &str,
 ) -> Result<std::process::ExitStatus, ()> {
     let deadline = std::time::Instant::now() + timeout;
-    let poll_interval = std::time::Duration::from_secs(2);
+    let poll_interval = std::time::Duration::from_millis(2000);
+    let heartbeat_interval = std::time::Duration::from_secs(30);
+    let mut last_heartbeat = std::time::Instant::now();
+
+    // Send initial heartbeat
+    send_heartbeat(client, sprint_id).await;
 
     loop {
         match child.try_wait() {
@@ -1053,13 +1155,32 @@ fn wait_with_timeout(
                 if std::time::Instant::now() >= deadline {
                     return Err(());
                 }
-                std::thread::sleep(poll_interval);
+                // Heartbeat every ~30 seconds
+                if last_heartbeat.elapsed() >= heartbeat_interval {
+                    send_heartbeat(client, sprint_id).await;
+                    last_heartbeat = std::time::Instant::now();
+                }
+                tokio::time::sleep(poll_interval).await;
             }
             Err(e) => {
                 tracing::error!(error = %e, "Error waiting for child process");
                 return Err(());
             }
         }
+    }
+}
+
+/// PATCH heartbeat_at on a sprint record. Best-effort — never blocks or fails loudly.
+async fn send_heartbeat(client: &ApiClient, sprint_id: &str) {
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = client
+        .patch::<_, serde_json::Value>(
+            &format!("/v1/er_sprints/{sprint_id}"),
+            &json!({ "heartbeat_at": now }),
+        )
+        .await
+    {
+        tracing::debug!(error = %e, "Heartbeat PATCH failed (non-fatal)");
     }
 }
 

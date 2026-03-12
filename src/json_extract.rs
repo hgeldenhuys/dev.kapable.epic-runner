@@ -72,6 +72,66 @@ pub fn extract_json_object(text: &str) -> Option<serde_json::Value> {
     None
 }
 
+/// Extract the first valid JSON array from text that may contain markdown fences,
+/// preamble, or trailing commentary. Same strategy as extract_json_object but for arrays.
+pub fn extract_json_array(text: &str) -> Option<Vec<serde_json::Value>> {
+    let trimmed = text.trim();
+
+    // 1. Direct parse
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(arr) = v.as_array() {
+            return Some(arr.clone());
+        }
+    }
+
+    // 2. Strip markdown fences
+    if let Some(inner) = strip_markdown_fences(trimmed) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner.trim()) {
+            if let Some(arr) = v.as_array() {
+                return Some(arr.clone());
+            }
+        }
+    }
+
+    // 3. Find first `[` and last `]`, try to parse that span
+    let first_bracket = trimmed.find('[')?;
+    let last_bracket = trimmed.rfind(']')?;
+    if first_bracket >= last_bracket {
+        return None;
+    }
+
+    let candidate = &trimmed[first_bracket..=last_bracket];
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
+        if let Some(arr) = v.as_array() {
+            return Some(arr.clone());
+        }
+    }
+
+    // 4. Progressive shrink from end
+    let bytes = trimmed.as_bytes();
+    let mut pos = last_bracket;
+    loop {
+        let candidate = &trimmed[first_bracket..=pos];
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
+            if let Some(arr) = v.as_array() {
+                return Some(arr.clone());
+            }
+        }
+        if pos == 0 || pos <= first_bracket {
+            break;
+        }
+        pos -= 1;
+        while pos > first_bracket && bytes[pos] != b']' {
+            pos -= 1;
+        }
+        if pos <= first_bracket {
+            break;
+        }
+    }
+
+    None
+}
+
 /// Strip markdown code fences from text.
 /// Handles: ```json\n...\n```, ```\n...\n```, ```JSON\n...\n```
 fn strip_markdown_fences(text: &str) -> Option<&str> {

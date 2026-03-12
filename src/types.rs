@@ -45,8 +45,29 @@ pub struct Story {
     pub epic_code: Option<String>,
     pub status: StoryStatus,
     pub points: Option<i32>,
+    /// Grooming enrichment: testable ACs (Given/When/Then)
     pub acceptance_criteria: Option<serde_json::Value>,
+    /// Grooming enrichment: specific files + line numbers for modification
     pub file_paths: Option<serde_json::Value>,
+    /// Grooming enrichment: implementation plan (approach, steps, risks)
+    #[serde(default)]
+    pub implementation_plan: Option<serde_json::Value>,
+    /// Grooming enrichment: discrete tasks with file/line/status
+    #[serde(default)]
+    pub tasks: Option<serde_json::Value>,
+    /// Grooming enrichment: inter-story dependencies
+    #[serde(default)]
+    pub dependencies: Option<serde_json::Value>,
+    /// Grooming enrichment: how to verify this story works
+    #[serde(default)]
+    pub test_plan: Option<String>,
+    /// Condensed research findings relevant to this story
+    #[serde(default)]
+    pub research_summary: Option<String>,
+    /// When this story was last groomed (ISO8601)
+    #[serde(default)]
+    pub groomed_at: Option<String>,
+    /// Legacy field — kept for backward compat
     pub dod_checklist: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -147,6 +168,10 @@ pub struct JudgeVerdict {
     /// v3: List of story codes completed in this sprint
     #[serde(default)]
     pub stories_completed: Option<Vec<String>>,
+    /// v3: Stories that need re-grooming (plan was wrong, scope changed).
+    /// These get their grooming fields cleared so the next sprint re-grooms them.
+    #[serde(default)]
+    pub stories_to_regroom: Option<Vec<String>>,
 }
 
 /// A story discovered by the judge during sprint evaluation, to be added back to the backlog.
@@ -191,6 +216,10 @@ pub struct Sprint {
     pub ceremony_costs: Option<serde_json::Value>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// Outward heartbeat — last time the orchestrator confirmed this sprint is alive.
+    /// Updated every ~30s during execution. Stale heartbeats (>5 min) indicate zombie sprints.
+    #[serde(default)]
+    pub heartbeat_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 

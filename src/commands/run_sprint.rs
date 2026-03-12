@@ -13,13 +13,13 @@ pub struct SprintRunArgs {
     /// Sprint ID to execute
     pub sprint_id: String,
 
-    /// Model override
-    #[arg(long, default_value = "opus")]
-    pub model: String,
+    /// Model override for ALL nodes (overrides per-node YAML models)
+    #[arg(long)]
+    pub model: Option<String>,
 
-    /// Effort override (low, medium, high)
-    #[arg(long, default_value = "high")]
-    pub effort: String,
+    /// Effort override for ALL nodes (overrides per-node YAML effort)
+    #[arg(long)]
+    pub effort: Option<String>,
 
     /// Additional directories
     #[arg(long)]
@@ -90,7 +90,11 @@ pub async fn run(
     if let Err(e) = client
         .patch::<_, serde_json::Value>(
             &format!("/v1/er_sprints/{}", sprint.id),
-            &json!({ "status": "executing", "started_at": chrono::Utc::now().to_rfc3339() }),
+            &json!({
+                "status": "executing",
+                "started_at": chrono::Utc::now().to_rfc3339(),
+                "heartbeat_at": chrono::Utc::now().to_rfc3339(),
+            }),
         )
         .await
     {
@@ -124,8 +128,8 @@ pub async fn run(
             &product.repo_path,
         )
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
-        model_override: Some(args.model.clone()),
-        effort_override: Some(args.effort.clone()),
+        model_override: args.model.clone(),
+        effort_override: args.effort.clone(),
         budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
         previous_learnings,
@@ -164,6 +168,14 @@ pub async fn run(
             std::process::exit(1);
         }
     };
+
+    // 8b. Write groomed story data back to DB (reference-based flow)
+    // The groomer outputs a JSON array of stories with acceptance_criteria, file_paths, points.
+    // We PATCH each story record so the data persists across sprint retries. Future sprints
+    // see pre-groomed stories and skip re-grooming unless the judge instructs otherwise.
+    if let Some(groom_result) = results.iter().find(|r| r.key == "groom") {
+        write_groom_results_to_stories(client, &sprint, groom_result).await;
+    }
 
     // 9. Determine outcome
     let judge_verdict = results.iter().find_map(|r| r.judge_verdict.clone());
@@ -359,6 +371,103 @@ pub async fn run(
                     "{} Judge created {} delta stories for next sprint",
                     "[backlog]".dimmed(),
                     delta_stories.len()
+                );
+            }
+        }
+    }
+
+    // 11d. Transition completed stories to "done" based on judge verdict
+    if let Some(verdict) = &judge_verdict {
+        if let Some(completed_codes) = &verdict.stories_completed {
+            let story_list = sprint
+                .stories
+                .as_ref()
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut done_count = 0usize;
+            for code in completed_codes {
+                // Find the story ID matching this code
+                let story_id = story_list.iter().find_map(|s| {
+                    if s.get("code").and_then(|c| c.as_str()) == Some(code.as_str()) {
+                        s.get("id").and_then(|id| id.as_str()).map(String::from)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(sid) = story_id {
+                    if let Err(e) = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/stories/{}", sid),
+                            &json!({ "status": "done" }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(story_code = %code, error = %e, "Failed to mark story done");
+                    } else {
+                        done_count += 1;
+                    }
+                } else {
+                    tracing::warn!(story_code = %code, "Story code from judge verdict not found in sprint stories");
+                }
+            }
+            if done_count > 0 {
+                eprintln!(
+                    "{} Marked {} stories as done based on judge verdict",
+                    "[stories]".dimmed(),
+                    done_count
+                );
+            }
+        }
+    }
+
+    // 11e. Clear grooming fields for stories the judge flagged for re-grooming.
+    // This forces the next sprint's groomer to re-plan these stories.
+    if let Some(verdict) = &judge_verdict {
+        if let Some(regroom_codes) = &verdict.stories_to_regroom {
+            let story_list = sprint
+                .stories
+                .as_ref()
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut cleared = 0usize;
+            for code in regroom_codes {
+                let story_id = story_list.iter().find_map(|s| {
+                    if s.get("code").and_then(|c| c.as_str()) == Some(code.as_str()) {
+                        s.get("id").and_then(|id| id.as_str()).map(String::from)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(sid) = story_id {
+                    // Clear grooming fields so next sprint re-grooms this story
+                    if let Err(e) = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/stories/{}", sid),
+                            &json!({
+                                "acceptance_criteria": null,
+                                "implementation_plan": null,
+                                "tasks": null,
+                                "file_paths": null,
+                                "test_plan": null,
+                                "research_summary": null,
+                                "groomed_at": null,
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(story_code = %code, error = %e, "Failed to clear grooming for re-groom");
+                    } else {
+                        cleared += 1;
+                    }
+                }
+            }
+            if cleared > 0 {
+                eprintln!(
+                    "{} Cleared grooming data for {} stories (judge requested re-groom)",
+                    "[regroom]".dimmed(),
+                    cleared
                 );
             }
         }
@@ -632,6 +741,134 @@ fn create_backlog_from_retro(
             epic_code,
             sprint_number,
             "Created backlog items from retro discovered_work"
+        );
+    }
+}
+
+/// Write groomed story data (ACs, file_paths, points) back to story records in DB.
+/// This is the key mechanism for reference-based data flow: groomer output gets persisted
+/// TO the story, so future sprints see pre-groomed stories and skip re-grooming.
+/// Also refreshes the sprint's stories field with the enriched data so downstream
+/// ceremony nodes (builder, judge) see the groomed version via {{stories}}.
+async fn write_groom_results_to_stories(
+    client: &ApiClient,
+    sprint: &Sprint,
+    groom_result: &crate::flow::engine::NodeResult,
+) {
+    let output = match &groom_result.output {
+        Some(o) => o,
+        None => return,
+    };
+
+    // Parse groomer's JSON array output (may be wrapped in markdown fences)
+    let stories: Vec<serde_json::Value> =
+        match crate::json_extract::extract_json_array(output) {
+            Some(arr) => arr,
+            None => {
+                // Try extracting a JSON object that might contain a "stories" key
+                if let Some(obj) = crate::json_extract::extract_json_object(output) {
+                    match obj.get("stories").and_then(|s| s.as_array()) {
+                        Some(arr) => arr.clone(),
+                        None => {
+                            tracing::warn!("Could not extract stories array from groom output");
+                            return;
+                        }
+                    }
+                } else {
+                    tracing::warn!("Could not parse groom output as JSON array or object");
+                    return;
+                }
+            }
+        };
+
+    let mut patched = 0usize;
+    let mut enriched_stories = Vec::new();
+
+    for story in &stories {
+        // Each story MUST have an "id" field for write-back
+        let story_id = match story.get("id").and_then(|id| id.as_str()) {
+            Some(id) => id,
+            None => {
+                tracing::debug!("Groomed story missing 'id' field — skipping write-back");
+                enriched_stories.push(story.clone());
+                continue;
+            }
+        };
+
+        // Build PATCH payload — persist all grooming enrichment fields to the story record.
+        // These fields make each story a self-contained "work packet" that the builder
+        // can execute without additional context assembly.
+        let mut patch = serde_json::Map::new();
+
+        let grooming_fields = [
+            "acceptance_criteria",
+            "file_paths",
+            "points",
+            "implementation_plan",
+            "tasks",
+            "dependencies",
+            "test_plan",
+            "research_summary",
+        ];
+
+        for field in &grooming_fields {
+            if let Some(val) = story.get(*field) {
+                if !val.is_null() {
+                    patch.insert(field.to_string(), val.clone());
+                }
+            }
+        }
+
+        // Timestamp when this story was groomed
+        if !patch.is_empty() {
+            patch.insert(
+                "groomed_at".to_string(),
+                serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+            );
+        }
+
+        if patch.is_empty() {
+            enriched_stories.push(story.clone());
+            continue;
+        }
+
+        match client
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/stories/{}", story_id),
+                &serde_json::Value::Object(patch),
+            )
+            .await
+        {
+            Ok(_) => {
+                patched += 1;
+                enriched_stories.push(story.clone());
+            }
+            Err(e) => {
+                tracing::warn!(story_id, error = %e, "Failed to write groom data to story");
+                enriched_stories.push(story.clone());
+            }
+        }
+    }
+
+    // Update sprint's stories field with enriched data so downstream nodes see it via {{stories}}
+    if !enriched_stories.is_empty() {
+        let enriched_json = serde_json::Value::Array(enriched_stories);
+        if let Err(e) = client
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/er_sprints/{}", sprint.id),
+                &serde_json::json!({ "stories": enriched_json }),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to update sprint with enriched stories");
+        }
+    }
+
+    if patched > 0 {
+        eprintln!(
+            "{} Wrote groomed data to {} story records (ACs, file_paths, points)",
+            "[groom→db]".dimmed(),
+            patched
         );
     }
 }
