@@ -132,7 +132,7 @@ pub async fn run(
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
-    let results = match engine::execute_flow(&flow, &ctx, &sink).await {
+    let results = match engine::execute_flow(&flow, &ctx, &sink, client).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "Flow execution crashed — marking sprint as cancelled");

@@ -4,8 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
+use uuid::Uuid;
 
 use crate::api_client::ApiClient;
+use crate::flow::engine::NodeResult;
 use crate::types::SprintEvent;
 
 /// Maximum events per batch POST.
@@ -143,6 +145,42 @@ impl EventSink {
     pub fn emit(&self, event: SprintEvent) {
         let _ = self.tx.send(event);
     }
+
+    /// Finalize a structured artifact from node completion.
+    /// Unlike emit() which is fire-and-forget, this awaits the POST to ensure artifacts are persisted.
+    /// Takes the ApiClient as a parameter since EventSink only holds the mpsc sender.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finalize_artifact(
+        &self,
+        client: &ApiClient,
+        sprint_id: Uuid,
+        epic_code: &str,
+        artifact_type: &str,
+        node_key: &str,
+        title: &str,
+        summary: Option<&str>,
+        content: serde_json::Value,
+    ) {
+        let payload = json!({
+            "sprint_id": sprint_id.to_string(),
+            "epic_code": epic_code,
+            "artifact_type": artifact_type,
+            "node_key": node_key,
+            "title": title,
+            "summary": summary,
+            "content": content,
+        });
+
+        match client
+            .post::<_, serde_json::Value>("/v1/sprint_artifacts", &payload)
+            .await
+        {
+            Ok(_) => tracing::info!(artifact_type, node_key, "Artifact finalized"),
+            Err(e) => {
+                tracing::warn!(error = %e, artifact_type, node_key, "Failed to finalize artifact")
+            }
+        }
+    }
 }
 
 /// Flush a batch of events via POST. Retries once on transient failure.
@@ -247,4 +285,51 @@ async fn flush_batch(
     }
 
     buffer.clear();
+}
+
+/// Extract artifact type and metadata from a completed node result.
+/// Returns None if the node doesn't produce a meaningful artifact.
+/// Returns (artifact_type, title, content) for nodes that do.
+pub(crate) fn extract_artifact_info(
+    node_key: &str,
+    result: &NodeResult,
+) -> Option<(&'static str, String, serde_json::Value)> {
+    // Map node keys to artifact types
+    let (artifact_type, title) = match node_key {
+        "researcher" | "research" => ("research", "Sprint Research"),
+        "groomer" | "groom" => ("acceptance_criteria", "Acceptance Criteria"),
+        "judge" | "business_review" => ("judge_verdict", "Judge Verdict"),
+        "retro" | "retrospective" | "sm_retro" => ("retrospective", "Sprint Retrospective"),
+        _ => return None, // Not all nodes produce artifacts
+    };
+
+    // Build content JSONB from the node result
+    let mut content = json!({
+        "status": format!("{:?}", result.status),
+        "cost_usd": result.cost_usd,
+    });
+
+    // Add node output as the main content
+    if let Some(ref output) = result.output {
+        content["output"] = serde_json::Value::String(output.clone());
+    }
+
+    // Add judge verdict if present
+    if let Some(ref verdict) = result.judge_verdict {
+        content["verdict"] = serde_json::to_value(verdict).unwrap_or_default();
+    }
+
+    // Add supervisor decisions if any
+    if !result.supervisor_decisions.is_empty() {
+        content["supervisor_decisions"] =
+            serde_json::to_value(&result.supervisor_decisions).unwrap_or_default();
+    }
+
+    // Add rubber duck sessions if any
+    if !result.rubber_duck_sessions.is_empty() {
+        content["rubber_duck_sessions"] =
+            serde_json::to_value(&result.rubber_duck_sessions).unwrap_or_default();
+    }
+
+    Some((artifact_type, title.to_string(), content))
 }

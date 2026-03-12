@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 use super::definition::*;
-use crate::event_sink::EventSink;
+use crate::api_client::ApiClient;
+use crate::event_sink::{self, EventSink};
 use crate::executor::{self, ExecutorConfig};
 use crate::supervisor;
 use crate::types::*;
@@ -66,6 +67,7 @@ pub async fn execute_flow(
     flow: &CeremonyFlow,
     ctx: &FlowContext,
     sink: &EventSink,
+    client: &ApiClient,
 ) -> Result<Vec<NodeResult>, Box<dyn std::error::Error>> {
     let adj = flow.adjacency();
     let rev_adj = flow.reverse_adjacency();
@@ -240,6 +242,30 @@ pub async fn execute_flow(
                 }
             }
 
+            // Extract and finalize structured artifact (awaited to ensure persistence)
+            if let Some((artifact_type, title, content)) =
+                event_sink::extract_artifact_info(&result.key, &result)
+            {
+                let summary = result.output.as_ref().map(|o| {
+                    if o.len() > 200 {
+                        format!("{}...", &o[..200])
+                    } else {
+                        o.clone()
+                    }
+                });
+                sink.finalize_artifact(
+                    client,
+                    ctx.sprint.session_id,
+                    &ctx.epic.code,
+                    artifact_type,
+                    &result.key,
+                    &title,
+                    summary.as_deref(),
+                    content,
+                )
+                .await;
+            }
+
             results.insert(key.clone(), result);
 
             // Checkpoint after each node — enables crash recovery
@@ -272,6 +298,30 @@ pub async fn execute_flow(
         .iter()
         .filter_map(|n| results.remove(&n.key))
         .collect();
+
+    // Finalize sprint-level aggregated cost artifact
+    let mut ceremony_costs = serde_json::Map::new();
+    let mut total_cost = 0.0f64;
+    for result in &ordered {
+        if let Some(cost) = result.cost_usd {
+            ceremony_costs.insert(result.key.clone(), serde_json::json!(cost));
+            total_cost += cost;
+        }
+    }
+    ceremony_costs.insert("total".to_string(), serde_json::json!(total_cost));
+
+    sink.finalize_artifact(
+        client,
+        ctx.sprint.session_id,
+        &ctx.epic.code,
+        "ceremony_costs",
+        "flow_engine",
+        "Ceremony Cost Breakdown",
+        Some(&format!("Total: ${:.2}", total_cost)),
+        serde_json::Value::Object(ceremony_costs),
+    )
+    .await;
+
     Ok(ordered)
 }
 
