@@ -141,6 +141,20 @@ pub async fn run(
                 detail: None,
                 timestamp: chrono::Utc::now(),
             });
+            // Mark sprint as failed with finished_at so UI shows correct duration
+            // (previously this was missing, leaving sprint in "executing" forever)
+            if let Err(patch_err) = client
+                .patch::<_, serde_json::Value>(
+                    &format!("/v1/er_sprints/{}", sprint.id),
+                    &json!({
+                        "status": "failed",
+                        "finished_at": chrono::Utc::now().to_rfc3339(),
+                    }),
+                )
+                .await
+            {
+                tracing::error!(error = %patch_err, "Failed to mark crashed sprint as failed in DB");
+            }
             drop(sink);
             let _ = sink_handle.await;
             std::process::exit(1);
