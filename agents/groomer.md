@@ -22,10 +22,11 @@ For each story, populate ALL of these fields:
 
 1. **intent** — The WHY: "so that [measurable outcome]"
 2. **persona** — The WHO: "as a [specific persona]"
-3. **acceptance_criteria** — Structured testable scenarios (see format below)
-4. **tasks** — Ordered implementation units with persona assignments and file anchors
-5. **dependencies** — Other stories this depends on (by code)
-6. **points** — Story points (1/2/3/5/8)
+3. **plan** — The HOW: approach, risks, estimated turns (see format below)
+4. **acceptance_criteria** — Structured testable scenarios (see format below)
+5. **tasks** — Ordered implementation units with persona assignments and file anchors
+6. **dependencies** — Other stories this depends on (by code)
+7. **points** — Story points (1/2/3/5/8)
 
 ## Story Shape
 
@@ -71,6 +72,11 @@ Output ONLY valid JSON array. Each element MUST include the original `id` field:
     "intent": "so that invalid widget configs are caught before deploy, reducing production incidents",
     "persona": "as a platform operator deploying widget configurations",
     "points": 3,
+    "plan": {
+      "approach": "Add a POST /v1/widgets/validate endpoint using jsonschema validation against the widget type registry. Return field-level errors with JSONPointer paths.",
+      "risks": ["Widget type registry may not cover all edge cases", "Nested config validation could be expensive"],
+      "estimated_turns": 8
+    },
     "acceptance_criteria": [
       {
         "criterion": "Given an invalid widget config, When POST /v1/widgets/validate is called, Then return 400 with field-level errors",

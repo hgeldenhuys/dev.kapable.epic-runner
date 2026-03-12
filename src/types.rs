@@ -17,6 +17,9 @@ pub struct Product {
     /// Git remote URL for multi-machine portability. When set, repo_path is resolved locally.
     #[serde(default)]
     pub repo_url: Option<String>,
+    /// Product-level definition of done — the judge evaluates every story against these checks
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_of_done: Option<Vec<DoDCheckItem>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -79,6 +82,84 @@ pub struct StoryTask {
     pub outcome: Option<String>,
 }
 
+// ── Story Plan ──────────────────────────────────
+
+/// The plan attached to a story before execution starts.
+/// Written by the groomer, consumed by the builder, evaluated by the judge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryPlan {
+    /// High-level approach (1-3 sentences)
+    pub approach: String,
+    /// Known risks or unknowns
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risks: Option<Vec<String>>,
+    /// Estimated context-window turns (builder uses this for pacing)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_turns: Option<i32>,
+}
+
+// ── Story Log Entry ─────────────────────────────
+
+/// A session-level summary attached to the story after execution.
+/// Each sprint attempt on a story produces one log entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryLogEntry {
+    /// What happened in this session (1-3 sentences)
+    pub summary: String,
+    /// Claude Code session ID (for transcript lookup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Sprint that produced this entry
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_id: Option<String>,
+    /// When this entry was created
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+// ── Action Item ─────────────────────────────────
+
+/// A follow-up action discovered during retro or judge evaluation.
+/// Links back to the story that surfaced it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionItem {
+    /// What needs to be done
+    pub description: String,
+    /// Story code this was discovered from (e.g. "ER-042")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_story: Option<String>,
+    /// Current status: open, done, wont_do
+    #[serde(default = "default_action_item_status")]
+    pub status: String,
+    /// Which ceremony surfaced this: retro, judge, builder
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_from: Option<String>,
+}
+
+fn default_action_item_status() -> String {
+    "open".to_string()
+}
+
+// ── Definition of Done Check Item ───────────────
+
+/// A single item in a product-level definition of done checklist.
+/// The judge evaluates each story against these before marking done.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoDCheckItem {
+    /// The check description (e.g. "All tests pass")
+    pub check: String,
+    /// How to verify (shell command or manual step)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<String>,
+    /// Is this check required (vs advisory)?
+    #[serde(default = "default_true")]
+    pub required: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 // ── Story (Backlog Item) ───────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +211,21 @@ pub struct Story {
     /// Number of sprint attempts on this story (incremented each sprint, used for retry limiting)
     #[serde(default)]
     pub attempt_count: Option<i32>,
+    /// Why this story is blocked (structured reason, set when status = blocked)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+    /// Files modified during story execution (populated by builder via git diff)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_files: Option<Vec<String>>,
+    /// Session-level summaries — each sprint attempt appends one entry
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_entries: Option<Vec<StoryLogEntry>>,
+    /// The plan for this story (written by groomer, consumed by builder)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<StoryPlan>,
+    /// Follow-up actions discovered during execution (retro, judge, builder)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_items: Option<Vec<ActionItem>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -233,6 +329,12 @@ pub struct JudgeVerdict {
     /// These get their grooming fields cleared so the next sprint re-grooms them.
     #[serde(default)]
     pub stories_to_regroom: Option<Vec<String>>,
+    /// v4: Follow-up action items discovered during review
+    #[serde(default)]
+    pub action_items: Option<Vec<ActionItem>>,
+    /// v4: All files changed during this sprint (from git diff)
+    #[serde(default)]
+    pub changed_files: Option<Vec<String>>,
 }
 
 /// A story discovered by the judge during sprint evaluation, to be added back to the backlog.

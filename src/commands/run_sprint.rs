@@ -868,6 +868,7 @@ async fn write_groom_results_to_stories(
             "points",
             "intent",
             "persona",
+            "plan",
         ];
 
         for field in &planning_fields {

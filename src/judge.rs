@@ -62,6 +62,8 @@ mod tests {
             delta_stories: None,
             stories_completed: None,
             stories_to_regroom: None,
+            action_items: None,
+            changed_files: None,
         };
         assert!(!evaluate_verdict(&Some(low_confidence)));
 
@@ -76,6 +78,8 @@ mod tests {
             delta_stories: None,
             stories_completed: None,
             stories_to_regroom: None,
+            action_items: None,
+            changed_files: None,
         };
         assert!(!evaluate_verdict(&Some(not_satisfied)));
 
@@ -90,6 +94,8 @@ mod tests {
             delta_stories: None,
             stories_completed: None,
             stories_to_regroom: None,
+            action_items: None,
+            changed_files: None,
         };
         assert!(evaluate_verdict(&Some(good)));
     }

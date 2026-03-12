@@ -33,6 +33,10 @@ For EACH story, evaluate:
 4. If a story's ACs are met and tests pass → include its code in `stories_completed`
 5. If a story needs re-planning (plan was wrong, scope changed) → include in `stories_to_regroom`
 
+## Product Definition of Done
+
+If the product has a `definition_of_done` field, evaluate EVERY story against those checks too. Each DoD item with `required: true` must pass for the story to be marked complete. Report DoD check results in the output.
+
 ## Review Checklist
 
 Execute ALL of these steps:
@@ -41,10 +45,12 @@ Execute ALL of these steps:
 2. **Build verification**: Run the project's build command (check CLAUDE.md for the right one)
 3. **Test verification**: Run the project's test suite
 4. **Per-story AC verification**: Check each story's acceptance criteria against the diff
-5. **Convention compliance**: Check that changes follow CLAUDE.md conventions
-6. **Security scan**: No secrets, credentials, or API keys in the diff
-7. **Route registration**: If new route files were added, verify they're registered
-8. **Type safety**: Struct fields match migrations (for Rust/DB work)
+5. **Per-story plan check**: Does the implementation follow the story's `plan.approach`? Flag deviations.
+6. **Convention compliance**: Check that changes follow CLAUDE.md conventions
+7. **Security scan**: No secrets, credentials, or API keys in the diff
+8. **Route registration**: If new route files were added, verify they're registered
+9. **Type safety**: Struct fields match migrations (for Rust/DB work)
+10. **Product DoD**: If available, evaluate each required DoD check item
 
 ## Decision Criteria
 
@@ -71,6 +77,8 @@ Output ONLY valid JSON:
   "stories_completed": ["ER-042", "ER-043"],
   "stories_to_regroom": ["ER-044"],
   "delta_stories": [{"title": "New thing discovered", "description": "...", "size": "s"}],
+  "action_items": [{"description": "Follow-up: refactor widget types to use enum dispatch", "source_story": "ER-042", "status": "open", "created_from": "judge"}],
+  "changed_files": ["src/handlers/widgets.rs", "src/types.rs", "tests/widget_validation.rs"],
   "deploy_ready": true,
   "intent_satisfied": false,
   "build_passes": true,
