@@ -57,6 +57,8 @@ pub struct CeremonyNodeConfig {
     pub gate_expect: Option<String>,
     pub loop_max: Option<i32>,
     pub rubber_duck_after: Option<i32>,
+    /// Maximum turns for the Claude CLI session (defaults to 50 if not set)
+    pub max_turns: Option<u32>,
     pub agent: Option<String>,
     /// Deploy node: Connect App Pipeline app ID
     pub deploy_app_id: Option<String>,

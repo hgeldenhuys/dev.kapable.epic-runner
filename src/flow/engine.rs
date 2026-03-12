@@ -482,14 +482,68 @@ async fn execute_deploy_node(
     });
 
     if std::path::Path::new(&worktree_path).exists() {
-        // Stage all changes
-        let add = std::process::Command::new("git")
-            .args(["add", "-A"])
+        // Phase 1: Stage modifications to already-tracked files (always safe)
+        let add_tracked = std::process::Command::new("git")
+            .args(["add", "-u"])
             .current_dir(&worktree_path)
             .output();
-        if let Ok(output) = add {
+        if let Ok(output) = add_tracked {
             if !output.status.success() {
-                tracing::warn!("git add -A failed in worktree");
+                tracing::warn!("git add -u failed in worktree");
+            }
+        }
+
+        // Phase 2: Selectively stage new (untracked) files, skipping dangerous patterns
+        let untracked = std::process::Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard"])
+            .current_dir(&worktree_path)
+            .output();
+        if let Ok(output) = untracked {
+            let file_list = String::from_utf8_lossy(&output.stdout);
+            let dangerous_patterns = [
+                ".env",
+                ".pem",
+                ".key",
+                ".p12",
+                ".pfx",
+                "credentials",
+                "secret",
+                "node_modules/",
+                "target/",
+                ".epic-runner/",
+                "build/",
+                "dist/",
+            ];
+            let mut staged_count = 0;
+            let mut skipped: Vec<String> = Vec::new();
+
+            for file in file_list.lines() {
+                let file_lower = file.to_lowercase();
+                let is_dangerous = dangerous_patterns.iter().any(|p| file_lower.contains(p));
+                if is_dangerous {
+                    skipped.push(file.to_string());
+                } else {
+                    let add_file = std::process::Command::new("git")
+                        .args(["add", file])
+                        .current_dir(&worktree_path)
+                        .output();
+                    if let Ok(o) = add_file {
+                        if o.status.success() {
+                            staged_count += 1;
+                        }
+                    }
+                }
+            }
+
+            if !skipped.is_empty() {
+                tracing::warn!(
+                    skipped_files = ?skipped,
+                    "Skipped {} potentially sensitive untracked file(s) during deploy staging",
+                    skipped.len()
+                );
+            }
+            if staged_count > 0 {
+                tracing::info!(staged_count, "Staged new untracked files for deploy");
             }
         }
 
@@ -544,11 +598,23 @@ async fn execute_deploy_node(
     }
 
     // Pull latest main first
-    std::process::Command::new("git")
+    let pull = std::process::Command::new("git")
         .args(["pull", "origin", "main", "--rebase"])
         .current_dir(repo_path)
-        .output()
-        .ok();
+        .output()?;
+    if !pull.status.success() {
+        // Abort the failed rebase to leave repo in a clean state
+        std::process::Command::new("git")
+            .args(["rebase", "--abort"])
+            .current_dir(repo_path)
+            .output()
+            .ok(); // best-effort cleanup
+        let err = String::from_utf8_lossy(&pull.stderr);
+        return Ok(deploy_failed(
+            node,
+            &format!("Failed to pull latest main: {}", err),
+        ));
+    }
 
     // Merge the worktree branch
     let merge = std::process::Command::new("git")
@@ -1093,6 +1159,7 @@ fn build_executor_config(
         heartbeat_timeout_secs: c.heartbeat_timeout_secs.unwrap_or(300),
         node_id: Some(node.key.clone()),
         node_label: Some(node.label.clone()),
+        max_turns: c.max_turns,
     }
 }
 

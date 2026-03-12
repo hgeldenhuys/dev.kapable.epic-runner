@@ -65,19 +65,33 @@ pub async fn run(
                 .ok_or(format!("Product '{product}' not found"))?;
             let product_id = product_data["id"].as_str().ok_or("Product has no id")?;
 
-            // Determine instance number (count existing epics in this domain)
-            // Note: JSONB Data API may not filter on arbitrary fields, so we
-            // fetch all epics for this product and post-filter by domain.
-            let all_epics: DataWrapper<Vec<serde_json::Value>> = client
-                .get(&format!("/v1/epics?product_id={product_id}"))
-                .await?;
-            let domain_count = all_epics
+            // Determine instance number globally (not per-product) to prevent code collisions
+            let all_epics_global: DataWrapper<Vec<serde_json::Value>> =
+                client.get("/v1/epics").await?;
+            let domain_upper = domain.to_uppercase();
+            let domain_count = all_epics_global
                 .data
                 .iter()
-                .filter(|e| e["domain"].as_str() == Some(&domain))
+                .filter(|e| {
+                    e["domain"]
+                        .as_str()
+                        .map(|d| d.to_uppercase() == domain_upper)
+                        .unwrap_or(false)
+                })
                 .count();
             let instance = domain_count as i32 + 1;
-            let code = format!("{}-{:03}", domain.to_uppercase(), instance);
+            let code = format!("{}-{:03}", domain_upper, instance);
+
+            // Verify code doesn't already exist (defense-in-depth)
+            let code_exists = all_epics_global
+                .data
+                .iter()
+                .any(|e| e["code"].as_str() == Some(code.as_str()));
+            if code_exists {
+                return Err(format!(
+                    "Epic code {code} already exists globally. Epic codes must be unique across all products."
+                ).into());
+            }
             let worktree_name = code.clone();
 
             let success_criteria: Option<serde_json::Value> =

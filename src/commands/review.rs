@@ -64,6 +64,7 @@ pub async fn run(
         brief: false,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
 
     eprintln!("Running business review for epic {}...", args.epic_code);

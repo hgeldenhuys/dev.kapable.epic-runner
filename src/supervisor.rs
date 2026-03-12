@@ -251,6 +251,7 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
         brief: false,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
 
     match executor::execute(duck_config, &|_| {}).await {

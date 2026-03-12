@@ -26,6 +26,8 @@ pub struct ExecutorConfig {
     pub heartbeat_timeout_secs: u64,
     /// Enable --brief mode (activates SendUserMessage tool for structured status updates)
     pub brief: bool,
+    /// Maximum turns for the Claude CLI session
+    pub max_turns: Option<u32>,
     /// Node identity for ceremony event attribution
     pub node_id: Option<String>,
     pub node_label: Option<String>,
@@ -50,7 +52,8 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     cmd.arg("--output-format").arg("stream-json");
     cmd.arg("--model").arg(&config.model);
     cmd.arg("--effort").arg(&config.effort);
-    cmd.arg("--max-turns").arg("50");
+    cmd.arg("--max-turns")
+        .arg(config.max_turns.unwrap_or(50).to_string());
     cmd.arg("--dangerously-skip-permissions");
 
     // Disable Claude's built-in git commit/PR instructions — ceremony nodes

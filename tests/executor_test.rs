@@ -21,6 +21,7 @@ fn build_command_includes_all_flags() {
         heartbeat_timeout_secs: 300,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -70,6 +71,7 @@ fn build_command_resume_uses_resume_flag() {
         heartbeat_timeout_secs: 300,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -102,6 +104,7 @@ fn build_command_with_agent() {
         heartbeat_timeout_secs: 120,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -143,6 +146,7 @@ fn build_command_brief_flag() {
         heartbeat_timeout_secs: 300,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -151,4 +155,70 @@ fn build_command_brief_flag() {
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert!(args.contains(&"--brief".to_string()));
+}
+
+#[test]
+fn build_command_max_turns_from_config() {
+    let config = ExecutorConfig {
+        model: "sonnet".into(),
+        effort: "high".into(),
+        worktree_name: "TEST-001".into(),
+        session_id: Uuid::new_v4(),
+        repo_path: "/tmp/test-repo".into(),
+        add_dirs: vec![],
+        system_prompt: None,
+        prompt: "Test max turns".into(),
+        chrome: false,
+        brief: false,
+        max_budget_usd: None,
+        allowed_tools: None,
+        resume_session: false,
+        agent: None,
+        heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
+        max_turns: Some(15),
+    };
+    let cmd = build_command(&config);
+    let args: Vec<_> = cmd
+        .as_std()
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    // Should use the configured value, not the default 50
+    let turns_idx = args.iter().position(|a| a == "--max-turns").unwrap();
+    assert_eq!(args[turns_idx + 1], "15");
+}
+
+#[test]
+fn build_command_max_turns_default() {
+    let config = ExecutorConfig {
+        model: "sonnet".into(),
+        effort: "high".into(),
+        worktree_name: "TEST-001".into(),
+        session_id: Uuid::new_v4(),
+        repo_path: "/tmp/test-repo".into(),
+        add_dirs: vec![],
+        system_prompt: None,
+        prompt: "Test default turns".into(),
+        chrome: false,
+        brief: false,
+        max_budget_usd: None,
+        allowed_tools: None,
+        resume_session: false,
+        agent: None,
+        heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
+        max_turns: None,
+    };
+    let cmd = build_command(&config);
+    let args: Vec<_> = cmd
+        .as_std()
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    // Should fall back to default 50
+    let turns_idx = args.iter().position(|a| a == "--max-turns").unwrap();
+    assert_eq!(args[turns_idx + 1], "50");
 }

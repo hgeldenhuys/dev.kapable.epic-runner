@@ -61,6 +61,7 @@ pub async fn run(
         brief: false,
         node_id: None,
         node_label: None,
+        max_turns: None,
     };
 
     eprintln!("Running retrospective for sprint {}...", args.sprint_id);
