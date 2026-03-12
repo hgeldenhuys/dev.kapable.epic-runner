@@ -31,6 +31,54 @@ pub struct CreateProduct {
     pub repo_url: Option<String>,
 }
 
+// ── Acceptance Criterion ──────────────────────
+
+/// A single testable acceptance criterion for a story.
+/// Structured so agents and humans can verify completion mechanically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptanceCriterion {
+    /// The criterion text (Given/When/Then or plain assertion)
+    pub criterion: String,
+    /// How to verify this criterion (shell command, curl, manual step)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testable_by: Option<String>,
+    /// Source file this criterion relates to
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Approximate line number hint for the relevant code
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_hint: Option<String>,
+    /// Whether this criterion has been verified as passing
+    #[serde(default)]
+    pub verified: bool,
+    /// Evidence of verification (test output, screenshot path, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+}
+
+// ── Story Task ───────────────────────────────
+
+/// A discrete unit of work within a story, assigned to a persona.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryTask {
+    /// What needs to be done
+    pub description: String,
+    /// Persona responsible: backend_engineer, frontend_engineer, qa_engineer, architect, devops
+    pub persona: String,
+    /// File path to modify
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Line number hint
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_hint: Option<String>,
+    /// Whether this task is complete
+    #[serde(default)]
+    pub done: bool,
+    /// Brief note on what was done (filled on completion)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+}
+
 // ── Story (Backlog Item) ───────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,35 +88,48 @@ pub struct Story {
     /// Human-readable code, e.g. "ER-042" (product-scoped sequential)
     #[serde(default)]
     pub code: Option<String>,
+    /// The WHAT — verb-led outcome, not a feature name.
+    /// Good: "User logs in with email and password"
+    /// Bad: "Login page"
     pub title: String,
+    /// The WHY — "so that [measurable outcome]".
+    /// This is the most important field for trade-off decisions.
+    /// Without it, the builder doesn't know if the implementation
+    /// actually delivers value vs. just compiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    /// The WHO — "as a [specific persona]".
+    /// Forces thinking about who benefits. In a BaaS platform,
+    /// "as the orchestrator" vs "as a co-founder viewing the console"
+    /// produce very different implementations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
+    /// Additional narrative context (not the "why" — use intent for that)
     pub description: Option<String>,
     pub epic_code: Option<String>,
     pub status: StoryStatus,
     pub points: Option<i32>,
-    /// Grooming enrichment: testable ACs (Given/When/Then)
-    pub acceptance_criteria: Option<serde_json::Value>,
-    /// Grooming enrichment: specific files + line numbers for modification
-    pub file_paths: Option<serde_json::Value>,
-    /// Grooming enrichment: implementation plan (approach, steps, risks)
+    /// Structured acceptance criteria — each criterion is testable and trackable.
+    /// Covers happy path, empty state, AND edge cases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_criteria: Option<Vec<AcceptanceCriterion>>,
+    /// Structured tasks — each task has a persona, file target, and completion state.
+    /// This IS the implementation plan. Ordered by dependency (architect → backend → frontend → QA).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Vec<StoryTask>>,
+    /// Story codes this depends on (e.g. ["ER-016", "ER-017"]).
+    /// Must be completed before this story can start.
+    /// Used by orchestrator for dependency-layer execution ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<String>>,
+    /// When this story was last planned (ISO8601).
+    /// Used to detect stale plans — if the codebase changed significantly
+    /// since planned_at, the story should be re-planned before execution.
+    #[serde(default, alias = "groomed_at")]
+    pub planned_at: Option<String>,
+    /// Number of sprint attempts on this story (incremented each sprint, used for retry limiting)
     #[serde(default)]
-    pub implementation_plan: Option<serde_json::Value>,
-    /// Grooming enrichment: discrete tasks with file/line/status
-    #[serde(default)]
-    pub tasks: Option<serde_json::Value>,
-    /// Grooming enrichment: inter-story dependencies
-    #[serde(default)]
-    pub dependencies: Option<serde_json::Value>,
-    /// Grooming enrichment: how to verify this story works
-    #[serde(default)]
-    pub test_plan: Option<String>,
-    /// Condensed research findings relevant to this story
-    #[serde(default)]
-    pub research_summary: Option<String>,
-    /// When this story was last groomed (ISO8601)
-    #[serde(default)]
-    pub groomed_at: Option<String>,
-    /// Legacy field — kept for backward compat
-    pub dod_checklist: Option<serde_json::Value>,
+    pub attempt_count: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

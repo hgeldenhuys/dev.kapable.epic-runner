@@ -117,8 +117,8 @@ nodes:
       prompt: |
         Execute all stories for sprint {{sprint.number}} of epic {{epic.code}}.
 
-        Each story in {{stories}} has its acceptance_criteria, file_paths, and points
-        already populated from grooming. Use those directly — they are the source of truth.
+        Each story in {{stories}} has its acceptance_criteria, tasks, and dependencies
+        already populated from planning. Use those directly — they are the source of truth.
 
         Research context (if any) is at .epic-runner/research/{{epic.code}}/findings.md
 

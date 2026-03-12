@@ -21,17 +21,17 @@ Verify that the sprint's code changes are correct, complete, and safe to deploy.
 ## Story-Level Evaluation
 
 Each story in the sprint is a **structured work packet** with:
-- `acceptance_criteria` — testable Given/When/Then scenarios
-- `tasks` — discrete implementation units with file paths
-- `test_plan` — specific command to verify the story
-- `implementation_plan` — the planned approach
+- `intent` — WHY this story exists ("so that [outcome]")
+- `acceptance_criteria` — structured ACs: each has `criterion` (Given/When/Then), `testable_by` (command), `file`, `line_hint`, `verified`, `evidence`
+- `tasks` — ordered implementation steps: each has `description`, `persona`, `file`, `line_hint`, `done`, `outcome`
+- `dependencies` — story codes that must be done first
 
 For EACH story, evaluate:
-1. Run the story's `test_plan` command — does it pass?
-2. Check each `acceptance_criteria` — is it satisfied by the code changes?
-3. Verify each `task` was addressed (check the file paths in git diff)
+1. Run each AC's `testable_by` command — does it pass?
+2. Check each `criterion` — is it satisfied by the code changes?
+3. Verify each task was addressed (check the `file` paths in git diff)
 4. If a story's ACs are met and tests pass → include its code in `stories_completed`
-5. If a story needs re-grooming (plan was wrong, scope changed) → include in `stories_to_regroom`
+5. If a story needs re-planning (plan was wrong, scope changed) → include in `stories_to_regroom`
 
 ## Review Checklist
 

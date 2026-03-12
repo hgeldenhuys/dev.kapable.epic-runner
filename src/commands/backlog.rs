@@ -45,10 +45,19 @@ pub enum BacklogAction {
         product: String,
         #[arg(long)]
         epic: Option<String>,
+        /// The WHY — "so that [measurable outcome]"
+        #[arg(long)]
+        intent: Option<String>,
+        /// The WHO — "as a [specific persona]"
+        #[arg(long)]
+        persona: Option<String>,
         #[arg(long)]
         description: Option<String>,
         #[arg(long)]
         points: Option<i32>,
+        /// Story codes this depends on (comma-separated, e.g. ER-001,ER-002)
+        #[arg(long, value_delimiter = ',')]
+        depends_on: Option<Vec<String>>,
         /// T-shirt size for context capacity planning (xs/s/m/l/xl)
         #[arg(long)]
         size: Option<String>,
@@ -87,8 +96,11 @@ pub async fn run(
             title,
             product,
             epic,
+            intent,
+            persona,
             description,
             points,
+            depends_on,
             size,
             tags,
         } => {
@@ -109,11 +121,14 @@ pub async fn run(
                 "code": code,
                 "title": title,
                 "epic_code": epic,
+                "intent": intent,
+                "persona": persona,
                 "description": description,
                 "points": points,
+                "dependencies": depends_on,
                 "status": "draft",
             });
-            // v3 fields: size and tags for backlog-first model
+            // Optional fields
             if let Some(s) = &size {
                 body["size"] = json!(s);
             }
@@ -180,17 +195,19 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&filtered)?);
             } else {
                 let mut table = Table::new();
-                table.set_header(vec!["Code", "Title", "Epic", "Status", "Pts"]);
+                table.set_header(vec!["Code", "Title", "Epic", "Status", "Pts", "Planned"]);
                 for row in &filtered {
                     let s: Story = serde_json::from_value((*row).clone())?;
                     let id_short = s.id.to_string();
                     let code_display = s.code.as_deref().unwrap_or(&id_short[..8]);
+                    let planned = s.planned_at.as_deref().map(|d| &d[..10]).unwrap_or("—");
                     table.add_row(vec![
                         Cell::new(code_display),
                         Cell::new(truncate(&s.title, 40)),
                         Cell::new(s.epic_code.as_deref().unwrap_or("-")),
                         Cell::new(s.status.to_string()),
                         Cell::new(s.points.map(|p| p.to_string()).unwrap_or("-".to_string())),
+                        Cell::new(planned),
                     ]);
                 }
                 println!("{table}");
