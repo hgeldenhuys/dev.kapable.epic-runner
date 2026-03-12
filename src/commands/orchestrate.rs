@@ -326,14 +326,8 @@ pub async fn run(
                     timeout_mins,
                     child_pid,
                 );
-                // Kill the child process group (negative PID = process group)
-                unsafe {
-                    libc::kill(-(child_pid as i32), libc::SIGTERM);
-                }
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                unsafe {
-                    libc::kill(-(child_pid as i32), libc::SIGKILL);
-                }
+                // Kill the child process tree (cross-platform)
+                kill_process_tree(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 -1 // Treated as unexpected exit → sprint cancelled
@@ -1070,12 +1064,50 @@ fn wait_with_timeout(
 }
 
 /// Check if a process with the given PID is still alive.
-/// Uses kill(pid, 0) which sends no signal but checks process existence.
-/// Works on both macOS and Linux (unlike /proc which is Linux-only).
+#[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is a standard POSIX call that checks process existence
     // without sending any signal. Returns 0 if process exists, -1 with ESRCH if not.
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Check if a process with the given PID is still alive (Windows).
+#[cfg(windows)]
+fn is_process_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|o| {
+            let out = String::from_utf8_lossy(&o.stdout);
+            // tasklist prints "INFO: No tasks are running..." when PID not found
+            !out.contains("No tasks") && out.contains(&pid.to_string())
+        })
+        .unwrap_or(false)
+}
+
+/// Kill a process tree. On Unix, sends SIGTERM to the process group, waits 2 seconds,
+/// then sends SIGKILL. On Windows, uses `taskkill /F /T /PID`.
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    // Send SIGTERM to the process group (negative PID = process group)
+    // SAFETY: kill with negative pid targets the process group — standard POSIX behavior.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    // SAFETY: Escalate to SIGKILL if the process group is still alive.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+/// Kill a process tree (Windows). Uses `taskkill /F /T /PID` to forcefully
+/// terminate the process and its entire child tree.
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
 }
 
 /// Detect the default branch of a git repository (main, master, or custom).
