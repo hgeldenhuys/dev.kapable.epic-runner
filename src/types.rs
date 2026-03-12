@@ -17,6 +17,11 @@ pub struct Product {
     /// Git remote URL for multi-machine portability. When set, repo_path is resolved locally.
     #[serde(default)]
     pub repo_url: Option<String>,
+    /// Product brief — architecture, file map, conventions, gotchas.
+    /// Injected into agent system prompts via {{product.brief}} to cut orientation cost.
+    /// Auto-updated from retro learnings at sprint end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
     /// Product-level definition of done — the judge evaluates every story against these checks
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition_of_done: Option<Vec<DoDCheckItem>>,

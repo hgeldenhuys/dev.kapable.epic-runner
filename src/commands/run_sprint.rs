@@ -185,6 +185,14 @@ pub async fn run(
 
     // 7. Build flow context
     let stories = sprint.stories.clone().unwrap_or(json!([]));
+    // Build product brief and DoD strings for agent context injection
+    let product_brief = product.brief.clone().unwrap_or_default();
+    let product_dod = product
+        .definition_of_done
+        .as_ref()
+        .map(|dod| serde_json::to_string_pretty(dod).unwrap_or_default())
+        .unwrap_or_default();
+
     let ctx = engine::FlowContext {
         epic: epic.clone(),
         sprint: sprint.clone(),
@@ -199,6 +207,8 @@ pub async fn run(
         budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
         previous_learnings,
+        product_brief,
+        product_definition_of_done: product_dod,
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)

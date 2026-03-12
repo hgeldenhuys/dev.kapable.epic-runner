@@ -37,6 +37,12 @@ pub struct FlowContext {
     pub add_dirs: Vec<String>,
     /// Learnings from previous sprints (fed back by retro → next sprint)
     pub previous_learnings: String,
+    /// Product brief — architecture, file map, conventions, gotchas.
+    /// Injected into agent system prompts via {{product.brief}} to cut orientation cost.
+    pub product_brief: String,
+    /// Product definition of done — conditional rules the judge evaluates.
+    /// Injected via {{product.definition_of_done}}.
+    pub product_definition_of_done: String,
 }
 
 /// Result of executing one node.
@@ -1411,6 +1417,8 @@ fn build_executor_config(
 /// - {{ceremony_results_json}} — structured JSON array of all node results so far
 /// - {{supervisor_decisions}} — summary of all supervisor decisions so far
 /// - {{repo.claude_md}} — contents of CLAUDE.md from the repo root (project conventions)
+/// - {{product.brief}} — product architecture, file map, conventions (cuts agent orientation cost)
+/// - {{product.definition_of_done}} — conditional DoD rules for the judge
 fn interpolate(
     template: &str,
     ctx: &FlowContext,
@@ -1471,6 +1479,8 @@ fn interpolate(
         .replace("{{repo.claude_md}}", &claude_md)
         .replace("{{previous_learnings}}", &ctx.previous_learnings)
         .replace("{{deploy_output}}", ab_urls)
+        .replace("{{product.brief}}", &ctx.product_brief)
+        .replace("{{product.definition_of_done}}", &ctx.product_definition_of_done)
         .replace("{{epic.code}}", &ctx.epic.code)
         .replace("{{epic.title}}", &ctx.epic.title)
         .replace("{{epic.intent}}", &ctx.epic.intent)

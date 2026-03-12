@@ -29,6 +29,9 @@ nodes:
         Epic: {{epic.code}} — {{epic.title}}
         Intent: {{epic.intent}}
 
+        Product Brief:
+        {{product.brief}}
+
         You are a planning-tier research agent. You make strategic decisions about
         what external intelligence the team needs, then gather it.
       prompt: |
@@ -69,6 +72,10 @@ nodes:
       agent: groomer
       system_prompt: |
         Grooming stories for epic {{epic.code}}.
+
+        Product Brief:
+        {{product.brief}}
+
         Project conventions (from CLAUDE.md):
         {{repo.claude_md}}
       prompt: |
@@ -107,6 +114,9 @@ nodes:
         Executing sprint {{sprint.number}} of epic {{epic.code}}.
         Intent: {{epic.intent}}
 
+        Product Brief:
+        {{product.brief}}
+
         Project conventions:
         {{repo.claude_md}}
 
@@ -140,6 +150,12 @@ nodes:
         Judging sprint {{sprint.number}} of epic {{epic.code}}.
         Intent: {{epic.intent}}
         Success criteria: {{epic.success_criteria}}
+
+        Product Brief:
+        {{product.brief}}
+
+        Product Definition of Done:
+        {{product.definition_of_done}}
 
         Project conventions:
         {{repo.claude_md}}
