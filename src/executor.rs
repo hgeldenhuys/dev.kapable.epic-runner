@@ -48,8 +48,13 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     cmd.arg("--verbose");
     cmd.arg("--output-format").arg("stream-json");
     cmd.arg("--model").arg(&config.model);
+    cmd.arg("--effort").arg(&config.effort);
     cmd.arg("--max-turns").arg("50");
     cmd.arg("--dangerously-skip-permissions");
+
+    // Disable Claude's built-in git commit/PR instructions — ceremony nodes
+    // have their own git handling via system prompts and deploy nodes.
+    cmd.env("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1");
 
     if config.resume_session {
         cmd.arg("--resume").arg(config.session_id.to_string());
@@ -113,7 +118,7 @@ pub async fn execute(
                     Ok(Ok(Some(line))) => {
                         if let Some(event) = stream::parse_line(&line) {
                             match &event {
-                                StreamEvent::Result { result, cost_usd: cost, .. } => {
+                                StreamEvent::Result { result, total_cost_usd: cost, .. } => {
                                     result_text = Some(result.clone());
                                     cost_usd = *cost;
                                 }

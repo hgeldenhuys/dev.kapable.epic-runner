@@ -20,7 +20,7 @@ nodes:
     label: "Research (read-only)"
     config:
       model: sonnet
-      effort: high
+      effort: low
       budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
@@ -63,7 +63,7 @@ nodes:
     label: "Groom (DoR + ACs)"
     config:
       model: sonnet
-      effort: high
+      effort: low
       budget_usd: 1.0
       chrome: false
       heartbeat_timeout_secs: 180
@@ -113,7 +113,7 @@ nodes:
     label: "Supervised Execute"
     config:
       model: opus
-      effort: max
+      effort: high
       budget_usd: 10.0
       chrome: true
       heartbeat_timeout_secs: 300
@@ -162,7 +162,7 @@ nodes:
     label: "Code Judge (build + diff)"
     config:
       model: sonnet
-      effort: high
+      effort: medium
       budget_usd: 2.0
       chrome: false
       heartbeat_timeout_secs: 180
@@ -230,7 +230,7 @@ nodes:
     label: "A/B Judge (Chrome)"
     config:
       model: sonnet
-      effort: high
+      effort: medium
       budget_usd: 3.0
       chrome: true
       heartbeat_timeout_secs: 300
@@ -313,7 +313,7 @@ nodes:
     always_run: true
     config:
       model: sonnet
-      effort: high
+      effort: low
       budget_usd: 2.0
       chrome: false
       heartbeat_timeout_secs: 180

@@ -8,10 +8,26 @@ fn parses_system_event() {
 }
 
 #[test]
-fn parses_result_event() {
+fn parses_result_event_with_total_cost_usd() {
+    // Claude Code stream-json uses total_cost_usd since SDK v1.0.22
+    let line =
+        r#"{"type":"result","result":"All done","session_id":"abc-123","total_cost_usd":0.05}"#;
+    let event = parse_line(line).unwrap();
+    assert_eq!(extract_result(&event), Some("All done"));
+    if let StreamEvent::Result { total_cost_usd, .. } = event {
+        assert_eq!(total_cost_usd, Some(0.05));
+    }
+}
+
+#[test]
+fn parses_result_event_with_legacy_cost_usd() {
+    // Backwards compat: cost_usd alias still works
     let line = r#"{"type":"result","result":"All done","session_id":"abc-123","cost_usd":0.05}"#;
     let event = parse_line(line).unwrap();
     assert_eq!(extract_result(&event), Some("All done"));
+    if let StreamEvent::Result { total_cost_usd, .. } = event {
+        assert_eq!(total_cost_usd, Some(0.05));
+    }
 }
 
 #[test]
@@ -71,10 +87,10 @@ fn handles_missing_required_fields() {
 
 #[test]
 fn handles_null_cost_usd() {
-    let line = r#"{"type":"result","result":"done","session_id":"abc","cost_usd":null}"#;
+    let line = r#"{"type":"result","result":"done","session_id":"abc","total_cost_usd":null}"#;
     let event = parse_line(line).unwrap();
-    if let StreamEvent::Result { cost_usd, .. } = event {
-        assert!(cost_usd.is_none());
+    if let StreamEvent::Result { total_cost_usd, .. } = event {
+        assert!(total_cost_usd.is_none());
     } else {
         panic!("Expected Result event");
     }
@@ -82,10 +98,10 @@ fn handles_null_cost_usd() {
 
 #[test]
 fn handles_zero_cost() {
-    let line = r#"{"type":"result","result":"done","session_id":"abc","cost_usd":0.0}"#;
+    let line = r#"{"type":"result","result":"done","session_id":"abc","total_cost_usd":0.0}"#;
     let event = parse_line(line).unwrap();
-    if let StreamEvent::Result { cost_usd, .. } = event {
-        assert_eq!(cost_usd, Some(0.0));
+    if let StreamEvent::Result { total_cost_usd, .. } = event {
+        assert_eq!(total_cost_usd, Some(0.0));
     } else {
         panic!("Expected Result event");
     }
@@ -93,10 +109,10 @@ fn handles_zero_cost() {
 
 #[test]
 fn handles_large_cost() {
-    let line = r#"{"type":"result","result":"done","session_id":"abc","cost_usd":999.99}"#;
+    let line = r#"{"type":"result","result":"done","session_id":"abc","total_cost_usd":999.99}"#;
     let event = parse_line(line).unwrap();
-    if let StreamEvent::Result { cost_usd, .. } = event {
-        assert_eq!(cost_usd, Some(999.99));
+    if let StreamEvent::Result { total_cost_usd, .. } = event {
+        assert_eq!(total_cost_usd, Some(999.99));
     } else {
         panic!("Expected Result event");
     }
@@ -157,7 +173,7 @@ fn handles_whitespace_variants() {
 
 #[test]
 fn handles_unicode_in_result() {
-    let line = r#"{"type":"result","result":"Résultat: 成功 — ✓ done","session_id":"abc","cost_usd":0.01}"#;
+    let line = r#"{"type":"result","result":"Résultat: 成功 — ✓ done","session_id":"abc","total_cost_usd":0.01}"#;
     let event = parse_line(line).unwrap();
     assert_eq!(extract_result(&event), Some("Résultat: 成功 — ✓ done"));
 }
@@ -166,7 +182,7 @@ fn handles_unicode_in_result() {
 fn handles_very_long_result_text() {
     let long_text = "x".repeat(100_000);
     let line = format!(
-        r#"{{"type":"result","result":"{}","session_id":"abc","cost_usd":0.5}}"#,
+        r#"{{"type":"result","result":"{}","session_id":"abc","total_cost_usd":0.5}}"#,
         long_text
     );
     let event = parse_line(&line).unwrap();
@@ -220,8 +236,7 @@ fn rejects_truncated_json() {
 
 #[test]
 fn handles_newlines_in_result_text() {
-    let line =
-        r#"{"type":"result","result":"line1\nline2\nline3","session_id":"abc","cost_usd":0.01}"#;
+    let line = r#"{"type":"result","result":"line1\nline2\nline3","session_id":"abc","total_cost_usd":0.01}"#;
     let event = parse_line(line).unwrap();
     if let StreamEvent::Result { result, .. } = event {
         assert!(result.contains("\\n") || result.contains('\n'));

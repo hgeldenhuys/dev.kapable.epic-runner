@@ -17,8 +17,8 @@ pub struct SprintRunArgs {
     #[arg(long, default_value = "opus")]
     pub model: String,
 
-    /// Effort override
-    #[arg(long, default_value = "max")]
+    /// Effort override (low, medium, high)
+    #[arg(long, default_value = "high")]
     pub effort: String,
 
     /// Additional directories

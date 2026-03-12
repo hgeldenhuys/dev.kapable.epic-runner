@@ -5,7 +5,7 @@ use uuid::Uuid;
 fn build_command_includes_all_flags() {
     let config = ExecutorConfig {
         model: "opus".into(),
-        effort: "max".into(),
+        effort: "high".into(),
         worktree_name: "AUTH-001".into(),
         session_id: Uuid::new_v4(),
         repo_path: "/tmp/test-repo".into(),
@@ -30,22 +30,31 @@ fn build_command_includes_all_flags() {
         .collect();
     assert!(args.contains(&"--print".to_string()));
     assert!(args.contains(&"stream-json".to_string()));
+    assert!(args.contains(&"--effort".to_string()));
+    assert!(args.contains(&"high".to_string()));
     assert!(args.contains(&"--chrome".to_string()));
     assert!(args.contains(&"--worktree".to_string()));
     assert!(args.contains(&"AUTH-001".to_string()));
     assert!(args.contains(&"--add-dir".to_string()));
     assert!(args.contains(&"/tmp/other".to_string()));
     assert!(!args.contains(&"--brief".to_string()));
-    // Budget enforcement disabled — will re-enable with production cost tracking
-    // assert!(args.contains(&"--max-budget-usd".to_string()));
-    // assert!(args.contains(&"5".to_string()));
+
+    // Verify CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS env var is set
+    let has_git_env = cmd.as_std().get_envs().any(|(k, v)| {
+        k.to_string_lossy() == "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
+            && v.map(|v| v.to_string_lossy().into_owned()) == Some("1".to_string())
+    });
+    assert!(
+        has_git_env,
+        "Expected CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1 env var"
+    );
 }
 
 #[test]
 fn build_command_resume_uses_resume_flag() {
     let config = ExecutorConfig {
         model: "opus".into(),
-        effort: "max".into(),
+        effort: "high".into(),
         worktree_name: "AUTH-001".into(),
         session_id: Uuid::new_v4(),
         repo_path: "/tmp/test-repo".into(),

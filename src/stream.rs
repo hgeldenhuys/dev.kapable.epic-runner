@@ -14,7 +14,9 @@ pub enum StreamEvent {
     Result {
         result: String,
         session_id: String,
-        cost_usd: Option<f64>,
+        /// Claude Code stream-json uses `total_cost_usd` since SDK v1.0.22
+        #[serde(alias = "cost_usd")]
+        total_cost_usd: Option<f64>,
     },
 }
 
