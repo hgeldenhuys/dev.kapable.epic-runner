@@ -27,6 +27,14 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() {
+    // Ignore SIGPIPE so piped output (e.g., `| head -10`) doesn't kill the process tree.
+    // Without this, a broken pipe from a truncated consumer sends SIGPIPE to the entire
+    // process group, killing orchestrate + sprint-run mid-flight.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
     let cli = Cli::parse();
 
     // Initialise structured logging. Honour RUST_LOG; fall back to

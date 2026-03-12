@@ -290,6 +290,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "futures",
+ "libc",
  "owo-colors",
  "reqwest",
  "scopeguard",
