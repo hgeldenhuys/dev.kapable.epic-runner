@@ -493,14 +493,17 @@ async fn execute_deploy_node(
             }
         }
 
-        // Phase 2: Selectively stage new (untracked) files, skipping dangerous patterns
+        // Phase 2: Selectively stage new (untracked) files, skipping dangerous patterns.
+        // Patterns are hardcoded defaults merged with user-defined .epic-runner/.gitignore-deploy.
         let untracked = std::process::Command::new("git")
             .args(["ls-files", "--others", "--exclude-standard"])
             .current_dir(&worktree_path)
             .output();
         if let Ok(output) = untracked {
             let file_list = String::from_utf8_lossy(&output.stdout);
-            let dangerous_patterns = [
+
+            // Built-in dangerous patterns (always active, can't be overridden)
+            let mut deny_patterns: Vec<String> = vec![
                 ".env",
                 ".pem",
                 ".key",
@@ -513,13 +516,36 @@ async fn execute_deploy_node(
                 ".epic-runner/",
                 "build/",
                 "dist/",
-            ];
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect();
+
+            // Merge user-defined patterns from .epic-runner/.gitignore-deploy (if it exists)
+            let gitignore_deploy_path =
+                std::path::Path::new(&worktree_path).join(".epic-runner/.gitignore-deploy");
+            if gitignore_deploy_path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(&gitignore_deploy_path) {
+                    for line in contents.lines() {
+                        let trimmed = line.trim();
+                        // Skip comments and blank lines (gitignore convention)
+                        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                            deny_patterns.push(trimmed.to_string());
+                        }
+                    }
+                    tracing::info!(
+                        path = %gitignore_deploy_path.display(),
+                        "Loaded additional deploy deny patterns from .gitignore-deploy"
+                    );
+                }
+            }
+
             let mut staged_count = 0;
             let mut skipped: Vec<String> = Vec::new();
 
             for file in file_list.lines() {
                 let file_lower = file.to_lowercase();
-                let is_dangerous = dangerous_patterns.iter().any(|p| file_lower.contains(p));
+                let is_dangerous = deny_patterns.iter().any(|p| file_lower.contains(p));
                 if is_dangerous {
                     skipped.push(file.to_string());
                 } else {
@@ -544,6 +570,34 @@ async fn execute_deploy_node(
             }
             if staged_count > 0 {
                 tracing::info!(staged_count, "Staged new untracked files for deploy");
+            }
+        }
+
+        // Phase 3: Post-staging audit — warn if any sensitive-looking files got staged
+        // (catches files that passed pattern checks but have suspicious names)
+        let staged_diff = std::process::Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(&worktree_path)
+            .output();
+        if let Ok(output) = staged_diff {
+            let staged_files = String::from_utf8_lossy(&output.stdout);
+            let sensitive_indicators = [".env", "secret", "credential", "key", "token", "password"];
+            let mut warnings: Vec<String> = Vec::new();
+            for file in staged_files.lines() {
+                let file_lower = file.to_lowercase();
+                for indicator in &sensitive_indicators {
+                    if file_lower.contains(indicator) {
+                        warnings.push(file.to_string());
+                        break;
+                    }
+                }
+            }
+            if !warnings.is_empty() {
+                tracing::warn!(
+                    staged_sensitive_files = ?warnings,
+                    "⚠ Post-staging audit: {} staged file(s) have sensitive-looking names — review before pushing",
+                    warnings.len()
+                );
             }
         }
 

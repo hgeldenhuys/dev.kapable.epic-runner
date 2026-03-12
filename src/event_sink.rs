@@ -1,4 +1,6 @@
 use serde_json::json;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
@@ -13,6 +15,17 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 /// Retry delay for transient failures.
 const RETRY_DELAY: Duration = Duration::from_millis(500);
 
+/// Lightweight metrics for EventSink — no external crate needed.
+/// Tracks events sent, batches flushed, and batch size distribution.
+#[derive(Debug, Default)]
+pub struct EventSinkMetrics {
+    pub events_sent: AtomicU64,
+    pub batches_sent: AtomicU64,
+    pub batch_size_sum: AtomicU64,
+    pub batch_size_max: AtomicU64,
+    pub individual_fallbacks: AtomicU64,
+}
+
 /// Async event sink that streams ceremony events to the DB in real-time.
 ///
 /// Architecture: sync `emit()` → mpsc channel → background tokio task → batched POST /v1/ceremony_events.
@@ -21,6 +34,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(500);
 #[derive(Clone)]
 pub struct EventSink {
     tx: mpsc::UnboundedSender<SprintEvent>,
+    metrics: Arc<EventSinkMetrics>,
 }
 
 impl EventSink {
@@ -29,6 +43,8 @@ impl EventSink {
     /// for the background writer (await after dropping the sink to flush).
     pub fn spawn(client: ApiClient) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, mut rx) = mpsc::unbounded_channel::<SprintEvent>();
+        let metrics = Arc::new(EventSinkMetrics::default());
+        let task_metrics = Arc::clone(&metrics);
         let handle = tokio::spawn(async move {
             let mut buffer: Vec<SprintEvent> = Vec::with_capacity(BATCH_SIZE);
             let mut flush_deadline: Option<Instant> = None;
@@ -62,7 +78,7 @@ impl EventSink {
                                 None => {
                                     // Channel closed — flush remaining and exit
                                     if !buffer.is_empty() {
-                                        flush_batch(&client, &mut buffer).await;
+                                        flush_batch(&client, &task_metrics, &mut buffer).await;
                                     }
                                     break;
                                 }
@@ -75,24 +91,51 @@ impl EventSink {
                 }
 
                 if should_flush && !buffer.is_empty() {
-                    flush_batch(&client, &mut buffer).await;
+                    flush_batch(&client, &task_metrics, &mut buffer).await;
                     flush_deadline = None;
                 }
             }
 
             // Final flush for any remaining events
             if !buffer.is_empty() {
-                flush_batch(&client, &mut buffer).await;
+                flush_batch(&client, &task_metrics, &mut buffer).await;
             }
+
+            // Log metrics summary at shutdown
+            let events = task_metrics.events_sent.load(Ordering::Relaxed);
+            let batches = task_metrics.batches_sent.load(Ordering::Relaxed);
+            let max_batch = task_metrics.batch_size_max.load(Ordering::Relaxed);
+            let fallbacks = task_metrics.individual_fallbacks.load(Ordering::Relaxed);
+            let avg_batch = if batches > 0 {
+                task_metrics.batch_size_sum.load(Ordering::Relaxed) as f64 / batches as f64
+            } else {
+                0.0
+            };
+            tracing::info!(
+                events_sent = events,
+                batches_sent = batches,
+                avg_batch_size = format!("{:.1}", avg_batch),
+                max_batch_size = max_batch,
+                individual_fallbacks = fallbacks,
+                "EventSink shutdown — metrics summary"
+            );
         });
-        (Self { tx }, handle)
+        (Self { tx, metrics }, handle)
     }
 
     /// No-op sink — events are silently dropped.
     /// Use for tests or when DB streaming is not configured.
     pub fn noop() -> Self {
         let (tx, _rx) = mpsc::unbounded_channel();
-        Self { tx }
+        Self {
+            tx,
+            metrics: Arc::new(EventSinkMetrics::default()),
+        }
+    }
+
+    /// Return a snapshot of the current metrics (for sprint-level cost reporting).
+    pub fn metrics(&self) -> &Arc<EventSinkMetrics> {
+        &self.metrics
     }
 
     /// Emit an event. Non-blocking, best-effort.
@@ -103,7 +146,12 @@ impl EventSink {
 }
 
 /// Flush a batch of events via POST. Retries once on transient failure.
-async fn flush_batch(client: &ApiClient, buffer: &mut Vec<SprintEvent>) {
+/// Updates metrics counters for observability.
+async fn flush_batch(
+    client: &ApiClient,
+    metrics: &EventSinkMetrics,
+    buffer: &mut Vec<SprintEvent>,
+) {
     let payloads: Vec<serde_json::Value> = buffer
         .iter()
         .map(|event| {
@@ -119,7 +167,7 @@ async fn flush_batch(client: &ApiClient, buffer: &mut Vec<SprintEvent>) {
         })
         .collect();
 
-    let batch_size = payloads.len();
+    let batch_size = payloads.len() as u64;
 
     // Try batch POST first (array payload)
     let result: Result<serde_json::Value, _> = client
@@ -131,6 +179,14 @@ async fn flush_batch(client: &ApiClient, buffer: &mut Vec<SprintEvent>) {
 
     match result {
         Ok(_) => {
+            metrics.events_sent.fetch_add(batch_size, Ordering::Relaxed);
+            metrics.batches_sent.fetch_add(1, Ordering::Relaxed);
+            metrics
+                .batch_size_sum
+                .fetch_add(batch_size, Ordering::Relaxed);
+            metrics
+                .batch_size_max
+                .fetch_max(batch_size, Ordering::Relaxed);
             tracing::debug!(batch_size, "Flushed ceremony event batch");
         }
         Err(first_err) => {
@@ -147,6 +203,14 @@ async fn flush_batch(client: &ApiClient, buffer: &mut Vec<SprintEvent>) {
 
             match retry {
                 Ok(_) => {
+                    metrics.events_sent.fetch_add(batch_size, Ordering::Relaxed);
+                    metrics.batches_sent.fetch_add(1, Ordering::Relaxed);
+                    metrics
+                        .batch_size_sum
+                        .fetch_add(batch_size, Ordering::Relaxed);
+                    metrics
+                        .batch_size_max
+                        .fetch_max(batch_size, Ordering::Relaxed);
                     tracing::debug!(batch_size, "Batch retry succeeded");
                 }
                 Err(retry_err) => {
@@ -155,14 +219,28 @@ async fn flush_batch(client: &ApiClient, buffer: &mut Vec<SprintEvent>) {
                         batch_size,
                         "Batch POST failed after retry — falling back to individual POSTs"
                     );
+                    metrics.individual_fallbacks.fetch_add(1, Ordering::Relaxed);
                     // Fall back to individual POSTs
                     for payload in &payloads {
                         let individual: Result<serde_json::Value, _> =
                             client.post("/v1/ceremony_events", payload).await;
-                        if let Err(e) = individual {
-                            tracing::warn!(error = %e, "Individual ceremony event POST also failed");
+                        match individual {
+                            Ok(_) => {
+                                metrics.events_sent.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Individual ceremony event POST also failed");
+                            }
                         }
                     }
+                    // Count the batch even on fallback
+                    metrics.batches_sent.fetch_add(1, Ordering::Relaxed);
+                    metrics
+                        .batch_size_sum
+                        .fetch_add(batch_size, Ordering::Relaxed);
+                    metrics
+                        .batch_size_max
+                        .fetch_max(batch_size, Ordering::Relaxed);
                 }
             }
         }
