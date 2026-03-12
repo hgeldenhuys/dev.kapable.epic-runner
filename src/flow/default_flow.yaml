@@ -140,13 +140,11 @@ nodes:
 
   - key: deploy_standby
     node_type: deploy
-    label: "Deploy to Standby"
+    label: "Deploy (Blue-Green)"
     config:
       deploy_app_id: "${DEPLOY_APP_ID}"
       deploy_timeout_secs: 300
-      deploy_slot: standby
       deploy_production_url: "${DEPLOY_PRODUCTION_URL}"
-      deploy_standby_url: "${DEPLOY_STANDBY_URL}"
 
   - key: gate_deploy
     node_type: gate
@@ -195,7 +193,6 @@ nodes:
     label: "Promote Standby → Primary"
     config:
       deploy_app_id: "${DEPLOY_APP_ID}"
-      deploy_slot: standby
 
   - key: merge_results
     node_type: merge
