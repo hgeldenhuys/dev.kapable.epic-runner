@@ -653,9 +653,33 @@ async fn execute_deploy_node(
     }
 
     // Step 4: Trigger Connect App Pipeline
+    // If no deploy_app_id is configured, skip gracefully — this product is a CLI tool
+    // (or other non-Connect-App artifact) that doesn't need pipeline deployment.
     let cfg = match resolve_deploy_config(c) {
         Ok(cfg) => cfg,
-        Err(e) => return Ok(deploy_failed(node, &e)),
+        Err(_) => {
+            let msg = "No deploy_app_id configured — skipping deploy (CLI/non-Connect-App product)";
+            tracing::info!("{}", msg);
+            sink.emit(SprintEvent {
+                sprint_id: ctx.sprint.session_id,
+                event_type: SprintEventType::DeployStep,
+                node_id: Some(node.key.clone()),
+                node_label: Some(node.label.clone()),
+                summary: msg.to_string(),
+                detail: None,
+                timestamp: chrono::Utc::now(),
+            });
+            return Ok(NodeResult {
+                key: node.key.clone(),
+                status: CeremonyStatus::Skipped,
+                output: Some(msg.to_string()),
+                cost_usd: None,
+                impediment_raised: false,
+                judge_verdict: None,
+                supervisor_decisions: vec![],
+                rubber_duck_sessions: vec![],
+            });
+        }
     };
     let app_id = cfg.app_id.as_str();
     let api_key = cfg.api_key.as_str();
@@ -889,9 +913,24 @@ async fn execute_promote_node(
     sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
     let c = &node.config;
+    // If no deploy_app_id is configured, skip gracefully — nothing to promote.
     let cfg = match resolve_deploy_config(c) {
         Ok(cfg) => cfg,
-        Err(e) => return Ok(deploy_failed(node, &e)),
+        Err(_) => {
+            let msg =
+                "No deploy_app_id configured — skipping promote (CLI/non-Connect-App product)";
+            tracing::info!("{}", msg);
+            return Ok(NodeResult {
+                key: node.key.clone(),
+                status: CeremonyStatus::Skipped,
+                output: Some(msg.to_string()),
+                cost_usd: None,
+                impediment_raised: false,
+                judge_verdict: None,
+                supervisor_decisions: vec![],
+                rubber_duck_sessions: vec![],
+            });
+        }
     };
     let app_id = cfg.app_id.as_str();
     let api_key = cfg.api_key.as_str();
