@@ -143,8 +143,8 @@ mod tests {
     #[test]
     fn default_flow_parses() {
         let flow = CeremonyFlow::default_flow();
-        assert_eq!(flow.nodes.len(), 17); // v2.2: +promote, gate_ab, judge_ab replaces judge, deploy_standby replaces deploy
-        assert_eq!(flow.edges.len(), 22); // v2.2: A/B judge + promote edges
+        assert_eq!(flow.nodes.len(), 14); // v3: removed inter-step gates (gate_research, gate_groom, gate_execute, gate_code), added gate_deploy_ok
+        assert_eq!(flow.edges.len(), 16); // v3: sequential flow + deploy chain gates
         assert!(flow.node("research").is_some());
         assert!(flow.node("execute").is_some());
         assert!(flow.node("deploy_standby").is_some());

@@ -349,24 +349,23 @@ edges:
             always_run: false,
         };
 
-        // Insert between gate_research (pass) → groom
+        // Insert between research → groom (v3 — no inter-step gates)
         let patches = vec![FlowPatch::InsertNode {
             node: Box::new(new_node),
-            after_node: "gate_research".to_string(),
+            after_node: "research".to_string(),
             before_node: "groom".to_string(),
         }];
 
         let result = apply_patches(&flow, &patches);
         assert_eq!(result.applied.len(), 1);
 
-        // Verify the pass handle is preserved on gate_research → research_review edge
-        let pass_edge = result
+        // Verify the edge is created: research → research_review
+        let edge = result
             .flow
             .edges
             .iter()
-            .find(|e| e.source == "gate_research" && e.target == "research_review");
-        assert!(pass_edge.is_some());
-        assert_eq!(pass_edge.unwrap().handle.as_deref(), Some("pass"));
+            .find(|e| e.source == "research" && e.target == "research_review");
+        assert!(edge.is_some());
     }
 
     #[test]
@@ -530,7 +529,7 @@ edges:
                 },
                 always_run: false,
             }),
-            after_node: "gate_research".to_string(),
+            after_node: "research".to_string(),
             before_node: "groom".to_string(),
         }];
 

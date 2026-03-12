@@ -270,18 +270,18 @@ pub async fn run(
                 break;
             }
             1 => {
-                // Failed but not blocked — re-groom and try next sprint
+                // Sprint completed — more work needed for epic mission
                 eprintln!(
                     "{}",
-                    "Sprint failed. Re-grooming stories for next sprint...".yellow()
+                    "Sprint completed — more work needed. Preparing next sprint...".yellow()
                 );
 
-                // 1. Reset failed stories back to ready so they're eligible for next sprint
+                // 1. Reset incomplete stories back to ready so they're eligible for next sprint
                 let reset_count = reset_failed_stories(client, &epic.code, sprint_num).await;
                 if reset_count > 0 {
                     eprintln!(
-                        "{} Reset {} stories back to ready",
-                        "[re-groom]".dimmed(),
+                        "{} Reset {} incomplete stories back to ready",
+                        "[backlog]".dimmed(),
                         reset_count,
                     );
                 }
@@ -314,20 +314,20 @@ pub async fn run(
                 // Unexpected exit (crash, context exhaustion, SIGKILL)
                 tracing::warn!(
                     exit_code,
-                    "Sprint process died unexpectedly — marking sprint failed, continuing"
+                    "Sprint process died unexpectedly — marking sprint cancelled, continuing"
                 );
-                // Mark this sprint as failed so it doesn't stay stuck in executing
+                // Mark this sprint as cancelled (externally interrupted, not failed)
                 if let Err(e) = client
                     .patch::<_, serde_json::Value>(
                         &format!("/v1/er_sprints/{sprint_id}"),
                         &json!({
-                            "status": "failed",
+                            "status": "cancelled",
                             "finished_at": chrono::Utc::now().to_rfc3339(),
                         }),
                     )
                     .await
                 {
-                    tracing::error!(error = %e, "Failed to mark crashed sprint as failed");
+                    tracing::error!(error = %e, "Failed to mark crashed sprint as cancelled");
                 }
             }
         }
@@ -337,7 +337,7 @@ pub async fn run(
     Ok(())
 }
 
-/// Reset stories that were consumed by a failed sprint back to "ready" so the next sprint
+/// Reset incomplete stories from a finished sprint back to "ready" so the next sprint
 /// can pick them up. Stories that have been attempted 3+ times get marked "blocked" instead.
 async fn reset_failed_stories(client: &ApiClient, epic_code: &str, _sprint_num: i32) -> usize {
     let all_stories: Result<DataWrapper<Vec<serde_json::Value>>, _> =
@@ -874,7 +874,7 @@ async fn load_retro_for_sprint(
 }
 
 /// Clean up stale sprints from previous crashed orchestrator runs.
-/// Any sprint in "executing" or "planning" status with no active process is marked "failed".
+/// Any sprint in "executing" or "planning" status with no active process is marked "cancelled".
 async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
     let all_sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> =
         client.get("/v1/er_sprints").await;
@@ -892,7 +892,7 @@ async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
         if status != "executing" && status != "planning" {
             continue;
         }
-        // This sprint is stuck — mark it as failed
+        // This sprint is stuck — mark it as cancelled (externally interrupted)
         let sprint_id = match sprint["id"].as_str() {
             Some(id) => id,
             None => continue,
@@ -903,7 +903,7 @@ async fn cleanup_stale_sprints(client: &ApiClient, epic_id: &str) {
             .patch::<_, serde_json::Value>(
                 &format!("/v1/er_sprints/{sprint_id}"),
                 &json!({
-                    "status": "failed",
+                    "status": "cancelled",
                     "finished_at": chrono::Utc::now().to_rfc3339(),
                 }),
             )

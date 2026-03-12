@@ -1,14 +1,12 @@
 name: "Default Sprint Ceremony"
-version: "2.3.0"
+version: "3.0.0"
 description: |
-  Full autonomous ceremony with A/B blue-green deploy:
-  research → groom → execute → code judge → deploy to STANDBY → A/B judge → promote.
-  Code judge (pre-deploy): reviews diff, runs build, verifies quality.
-  A/B judge (post-deploy): Chrome-based comparison of standby vs live production.
-  If judge passes: promote standby to primary (zero-downtime swap).
-  If judge fails: standby stays dormant (automatic rollback — no action needed).
-  Gates short-circuit on failure. SM retro always runs.
-  v2.3: Dedicated agent definitions per ceremony role.
+  v3 ceremony flow — sprint integrity model.
+  Research → Groom → Execute flow sequentially (no inter-step gates).
+  Code judge ALWAYS runs — evaluates mission progress, not just pass/fail.
+  Deploy chain is conditional (only if judge says deploy_ready).
+  Retro ALWAYS runs — the learning loop is the moat.
+  Sprints never fail. They complete with whatever work got done.
 
 nodes:
   - key: source
@@ -35,13 +33,6 @@ nodes:
         Project conventions (from CLAUDE.md):
         {{repo.claude_md}}
 
-  - key: gate_research
-    node_type: gate
-    label: "Research OK?"
-    config:
-      gate_field: status
-      gate_expect: completed
-
   - key: groom
     node_type: harness
     label: "Groom (DoR + ACs)"
@@ -65,13 +56,6 @@ nodes:
         4. List dependencies between stories
         5. Define test plan (what command verifies it works)
         Output groomed stories as JSON array.
-
-  - key: gate_groom
-    node_type: gate
-    label: "Groom OK?"
-    config:
-      gate_field: status
-      gate_expect: completed
 
   - key: execute
     node_type: loop
@@ -103,16 +87,10 @@ nodes:
 
         For each story: implement, test, commit. Report what you did per story.
 
-  - key: gate_execute
-    node_type: gate
-    label: "No Impediment?"
-    config:
-      gate_field: impediment_raised
-      gate_expect: "false"
-
   - key: judge_code
     node_type: agent
-    label: "Code Judge (build + diff)"
+    label: "Code Judge (mission progress)"
+    always_run: true
     config:
       model: sonnet
       effort: medium
@@ -122,18 +100,29 @@ nodes:
       agent: code-judge
       system_prompt: |
         Judging sprint {{sprint.number}} of epic {{epic.code}}.
+        Intent: {{epic.intent}}
+        Success criteria: {{epic.success_criteria}}
 
         Project conventions:
         {{repo.claude_md}}
       prompt: |
-        Review the code changes for sprint {{sprint.number}} of epic {{epic.code}}.
-        Verify the build passes and the code is ready to deploy.
+        Evaluate the mission progress for sprint {{sprint.number}} of epic {{epic.code}}.
+
         Ceremony results so far:
         {{ceremony_results_json}}
 
-  - key: gate_code
+        Assess:
+        1. mission_progress (0-100%): How much of the epic intent is now satisfied?
+        2. stories_completed: List of story codes that are done
+        3. delta_stories: NEW stories discovered during this sprint (add to backlog)
+        4. deploy_ready (bool): Is the code ready to deploy?
+        5. intent_satisfied (bool): Is the full epic mission complete?
+
+        Output your verdict as structured JSON with all five fields above.
+
+  - key: gate_deploy
     node_type: gate
-    label: "Code OK?"
+    label: "Deploy Ready?"
     config:
       gate_field: status
       gate_expect: completed
@@ -146,7 +135,7 @@ nodes:
       deploy_timeout_secs: 300
       deploy_production_url: "${DEPLOY_PRODUCTION_URL}"
 
-  - key: gate_deploy
+  - key: gate_deploy_ok
     node_type: gate
     label: "Deploy OK?"
     config:
@@ -231,46 +220,33 @@ nodes:
     config: {}
 
 edges:
+  # Sequential flow — no gates between research/groom/execute
   - source: source
     target: research
   - source: research
-    target: gate_research
-  - source: gate_research
     target: groom
-    handle: pass
-  - source: gate_research
-    target: merge_results
-    handle: fail
   - source: groom
-    target: gate_groom
-  - source: gate_groom
     target: execute
-    handle: pass
-  - source: gate_groom
-    target: merge_results
-    handle: fail
+
+  # Judge ALWAYS runs after execute (always_run: true)
   - source: execute
-    target: gate_execute
-  - source: gate_execute
     target: judge_code
-    handle: pass
-  - source: gate_execute
-    target: merge_results
-    handle: fail
+
+  # Deploy chain — conditional on judge saying code is ready
   - source: judge_code
-    target: gate_code
-  - source: gate_code
+    target: gate_deploy
+  - source: gate_deploy
     target: deploy_standby
     handle: pass
-  - source: gate_code
+  - source: gate_deploy
     target: merge_results
     handle: fail
   - source: deploy_standby
-    target: gate_deploy
-  - source: gate_deploy
+    target: gate_deploy_ok
+  - source: gate_deploy_ok
     target: judge_ab
     handle: pass
-  - source: gate_deploy
+  - source: gate_deploy_ok
     target: merge_results
     handle: fail
   - source: judge_ab
@@ -283,6 +259,8 @@ edges:
     handle: fail
   - source: promote
     target: merge_results
+
+  # Retro ALWAYS runs — the learning loop is the moat
   - source: merge_results
     target: sm_retro
   - source: sm_retro

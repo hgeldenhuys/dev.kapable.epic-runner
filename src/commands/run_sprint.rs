@@ -131,29 +131,29 @@ pub async fn run(
     let results = match engine::execute_flow(&flow, &ctx, &sink).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "Flow execution failed — exiting with failure");
+            tracing::error!(error = %e, "Flow execution crashed — marking sprint as cancelled");
             sink.emit(SprintEvent {
                 sprint_id: sprint.session_id,
-                event_type: SprintEventType::Failed,
+                event_type: SprintEventType::Completed,
                 node_id: None,
                 node_label: None,
-                summary: format!("Sprint {} crashed: {}", sprint.number, e),
-                detail: None,
+                summary: format!("Sprint {} cancelled (crash): {}", sprint.number, e),
+                detail: Some(json!({ "cancelled_reason": e.to_string() })),
                 timestamp: chrono::Utc::now(),
             });
-            // Mark sprint as failed with finished_at so UI shows correct duration
-            // (previously this was missing, leaving sprint in "executing" forever)
+            // Mark sprint as cancelled — it was interrupted, not failed.
+            // Cancelled sprints are not retried; the orchestrator creates a fresh sprint.
             if let Err(patch_err) = client
                 .patch::<_, serde_json::Value>(
                     &format!("/v1/er_sprints/{}", sprint.id),
                     &json!({
-                        "status": "failed",
+                        "status": "cancelled",
                         "finished_at": chrono::Utc::now().to_rfc3339(),
                     }),
                 )
                 .await
             {
-                tracing::error!(error = %patch_err, "Failed to mark crashed sprint as failed in DB");
+                tracing::error!(error = %patch_err, "Failed to mark crashed sprint as cancelled in DB");
             }
             drop(sink);
             let _ = sink_handle.await;
@@ -179,25 +179,35 @@ pub async fn run(
         })
     };
 
+    // Sprints never "fail" — they complete with whatever work got done.
+    // The judge evaluates mission progress; if more work is needed, the
+    // orchestrator creates another sprint. Only impediments block.
     let final_status = if any_impediment {
         "blocked"
-    } else if intent_satisfied {
-        "completed"
     } else {
-        "failed"
+        "completed"
     };
 
-    // Stream sprint finished event
+    // Stream sprint finished event — sprints always complete (or get blocked)
     sink.emit(SprintEvent {
         sprint_id: sprint.session_id,
-        event_type: if intent_satisfied {
-            SprintEventType::Completed
+        event_type: if any_impediment {
+            SprintEventType::Blocked
         } else {
-            SprintEventType::Failed
+            SprintEventType::Completed
         },
         node_id: None,
         node_label: None,
-        summary: format!("Sprint {} finished: {}", sprint.number, final_status),
+        summary: format!(
+            "Sprint {} {}: {}",
+            sprint.number,
+            final_status,
+            if intent_satisfied {
+                "mission satisfied"
+            } else {
+                "more work needed"
+            }
+        ),
         detail: Some(json!({
             "intent_satisfied": intent_satisfied,
             "impediment": any_impediment,
@@ -292,9 +302,10 @@ pub async fn run(
 
     eprintln!();
     let status_colored = match final_status {
-        "completed" => "completed".green().bold().to_string(),
+        "completed" if intent_satisfied => "MISSION COMPLETE".green().bold().to_string(),
+        "completed" => "completed (more work needed)".yellow().bold().to_string(),
         "blocked" => "BLOCKED".red().bold().to_string(),
-        _ => "failed".yellow().bold().to_string(),
+        _ => final_status.to_string(),
     };
     eprintln!(
         "{} Sprint {} finished: {}",
@@ -305,7 +316,7 @@ pub async fn run(
     let satisfied_str = if intent_satisfied {
         "true".green().to_string()
     } else {
-        "false".red().to_string()
+        "false — next sprint will continue".yellow().to_string()
     };
     eprintln!(
         "{} Intent satisfied: {}",
@@ -313,13 +324,16 @@ pub async fn run(
         satisfied_str
     );
 
-    // Exit with appropriate code for orchestrator to read
+    // Exit codes for orchestrator:
+    // 0 = mission complete (close epic)
+    // 1 = more work needed (create next sprint — NOT a failure)
+    // 2 = blocked by impediment (pause epic)
     if any_impediment {
-        std::process::exit(2); // blocked
+        std::process::exit(2);
     } else if !intent_satisfied {
-        std::process::exit(1); // failed but not blocked
+        std::process::exit(1);
     }
-    // exit(0) = success
+    // exit(0) = mission complete
 
     Ok(())
 }

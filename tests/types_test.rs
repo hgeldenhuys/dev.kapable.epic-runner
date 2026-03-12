@@ -33,7 +33,7 @@ fn sprint_status_all_variants() {
         epic_runner::types::SprintStatus::Planning,
         epic_runner::types::SprintStatus::Executing,
         epic_runner::types::SprintStatus::Completed,
-        epic_runner::types::SprintStatus::Failed,
+        epic_runner::types::SprintStatus::Cancelled,
     ];
     for status in statuses {
         let json = serde_json::to_string(&status).unwrap();

@@ -164,7 +164,7 @@ pub async fn run(
                 let status = sprint["status"].as_str().unwrap_or("?");
                 let status_icon = match status {
                     "completed" => "✓".green().to_string(),
-                    "failed" => "✗".red().to_string(),
+                    "cancelled" => "⊘".yellow().to_string(),
                     "blocked" => "⊘".red().bold().to_string(),
                     "executing" => "▶".yellow().to_string(),
                     _ => "?".dimmed().to_string(),

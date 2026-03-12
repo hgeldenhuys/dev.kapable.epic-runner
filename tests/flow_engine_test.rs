@@ -137,10 +137,10 @@ fn reverse_adjacency_maps_targets_to_sources() {
     // research's parent is source
     assert!(rev["research"].contains(&"source".to_string()));
 
-    // gate_research's parent is research
-    assert!(rev["gate_research"].contains(&"research".to_string()));
+    // groom's parent is research (v3 — no inter-step gates)
+    assert!(rev["groom"].contains(&"research".to_string()));
 
-    // merge_results has multiple parents (gate failures + judge)
+    // merge_results has multiple parents (deploy gate failures + promote)
     assert!(rev["merge_results"].len() >= 2);
 }
 
@@ -235,11 +235,11 @@ fn gate_skip_propagation_reaches_all_downstream() {
     let flow = CeremonyFlow::default_flow();
     let adj = flow.adjacency();
 
-    // Simulate: gate_research fails → should skip groom + gate_groom + execute + gate_execute + judge
+    // Simulate: gate_deploy fails → should skip deploy_standby + downstream deploy chain
     let mut skip_set = std::collections::HashSet::new();
 
-    // Find the "pass" edge target for gate_research
-    if let Some(downstream) = adj.get("gate_research") {
+    // Find the "pass" edge target for gate_deploy
+    if let Some(downstream) = adj.get("gate_deploy") {
         for (target, handle) in downstream {
             if handle.as_deref() == Some("pass") {
                 propagate_skip_test(&adj, target, &mut skip_set);
@@ -247,15 +247,18 @@ fn gate_skip_propagation_reaches_all_downstream() {
         }
     }
 
-    // groom should be skipped (pass edge from gate_research)
-    assert!(skip_set.contains("groom"), "groom should be skipped");
-    // gate_groom should be skipped (downstream of groom)
+    // deploy_standby should be skipped (pass edge from gate_deploy)
     assert!(
-        skip_set.contains("gate_groom"),
-        "gate_groom should be skipped"
+        skip_set.contains("deploy_standby"),
+        "deploy_standby should be skipped"
     );
-    // execute should be skipped (pass edge from gate_groom)
-    assert!(skip_set.contains("execute"), "execute should be skipped");
+    // gate_deploy_ok should be skipped (downstream of deploy_standby)
+    assert!(
+        skip_set.contains("gate_deploy_ok"),
+        "gate_deploy_ok should be skipped"
+    );
+    // judge_ab should be skipped (downstream of gate_deploy_ok)
+    assert!(skip_set.contains("judge_ab"), "judge_ab should be skipped");
 }
 
 /// Test helper — mirrors propagate_skip from engine.rs

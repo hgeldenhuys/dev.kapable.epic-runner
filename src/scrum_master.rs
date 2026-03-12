@@ -98,10 +98,10 @@ const CONSECUTIVE_FAIL_THRESHOLD: usize = 2;
 
 /// Analyze sprint history and recommend flow patches for the next sprint.
 ///
-/// Pattern detection rules:
-/// 1. If `gate_research` fails >= 2 consecutive sprints → insert a `research_review` harness
-///    between `research` and `gate_research` to improve research quality before gating.
-/// 2. If `gate_execute` fails (impediment) >= 2 consecutive sprints → increase `execute` loop_max.
+/// Pattern detection rules (v3 — no inter-step gates):
+/// 1. If `research` fails >= 2 consecutive sprints → insert a `research_review` harness
+///    between `research` and `groom` to improve research quality.
+/// 2. If `execute` fails (impediment) >= 2 consecutive sprints → increase `execute` loop_max.
 /// 3. If judge consistently reports low confidence → increase judge budget.
 /// 4. If recurring friction mentions "research" → boost research budget.
 pub fn recommend_flow_patches(
@@ -110,8 +110,8 @@ pub fn recommend_flow_patches(
 ) -> Vec<FlowPatch> {
     let mut patches = Vec::new();
 
-    // Rule 1: Consecutive research gate failures → insert research-review node
-    if consecutive_node_failures(history, "gate_research") >= CONSECUTIVE_FAIL_THRESHOLD {
+    // Rule 1: Consecutive research failures → insert research-review node
+    if consecutive_node_failures(history, "research") >= CONSECUTIVE_FAIL_THRESHOLD {
         // Only insert if the node doesn't already exist (idempotent)
         if current_flow.node("research_review").is_none() {
             patches.push(FlowPatch::InsertNode {
@@ -145,13 +145,13 @@ pub fn recommend_flow_patches(
                     always_run: false,
                 }),
                 after_node: "research".to_string(),
-                before_node: "gate_research".to_string(),
+                before_node: "groom".to_string(),
             });
         }
     }
 
-    // Rule 2: Consecutive execute gate failures → increase loop_max
-    if consecutive_node_failures(history, "gate_execute") >= CONSECUTIVE_FAIL_THRESHOLD {
+    // Rule 2: Consecutive execute failures → increase loop_max
+    if consecutive_node_failures(history, "execute") >= CONSECUTIVE_FAIL_THRESHOLD {
         if let Some(node) = current_flow.node("execute") {
             let current_max = node.config.loop_max.unwrap_or(5);
             let new_max = (current_max + 2).min(10); // cap at 10
@@ -188,8 +188,8 @@ pub fn recommend_flow_patches(
         }
     }
 
-    // Rule 4: Consecutive groom gate failures → boost groom budget + timeout
-    if consecutive_node_failures(history, "gate_groom") >= CONSECUTIVE_FAIL_THRESHOLD {
+    // Rule 4: Consecutive groom failures → boost groom budget + timeout
+    if consecutive_node_failures(history, "groom") >= CONSECUTIVE_FAIL_THRESHOLD {
         if let Some(node) = current_flow.node("groom") {
             let current_budget = node.config.budget_usd.unwrap_or(1.0);
             let new_budget = (current_budget * 1.5).min(5.0);
@@ -281,25 +281,25 @@ mod tests {
 
     #[test]
     fn consecutive_failures_counted_from_end() {
-        let history = make_history("gate_research", &["Completed", "Failed", "Failed"]);
-        assert_eq!(consecutive_node_failures(&history, "gate_research"), 2);
+        let history = make_history("research", &["Completed", "Failed", "Failed"]);
+        assert_eq!(consecutive_node_failures(&history, "research"), 2);
     }
 
     #[test]
     fn consecutive_failures_stops_at_success() {
-        let history = make_history("gate_research", &["Failed", "Completed", "Failed"]);
-        assert_eq!(consecutive_node_failures(&history, "gate_research"), 1);
+        let history = make_history("research", &["Failed", "Completed", "Failed"]);
+        assert_eq!(consecutive_node_failures(&history, "research"), 1);
     }
 
     #[test]
     fn no_failures_returns_zero() {
-        let history = make_history("gate_research", &["Completed", "Completed"]);
-        assert_eq!(consecutive_node_failures(&history, "gate_research"), 0);
+        let history = make_history("research", &["Completed", "Completed"]);
+        assert_eq!(consecutive_node_failures(&history, "research"), 0);
     }
 
     #[test]
-    fn recommend_research_review_on_gate_failures() {
-        let history = make_history("gate_research", &["Failed", "Failed"]);
+    fn recommend_research_review_on_research_failures() {
+        let history = make_history("research", &["Failed", "Failed"]);
         let flow = CeremonyFlow::default_flow();
         let patches = recommend_flow_patches(&history, &flow);
 
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn no_patch_when_single_failure() {
-        let history = make_history("gate_research", &["Completed", "Failed"]);
+        let history = make_history("research", &["Completed", "Failed"]);
         let flow = CeremonyFlow::default_flow();
         let patches = recommend_flow_patches(&history, &flow);
 
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn idempotent_research_review_not_duplicated() {
-        let history = make_history("gate_research", &["Failed", "Failed"]);
+        let history = make_history("research", &["Failed", "Failed"]);
         let flow = CeremonyFlow::default_flow();
 
         // Apply patches once
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn recommend_loop_max_increase_on_execute_failures() {
-        let history = make_history("gate_execute", &["Failed", "Failed"]);
+        let history = make_history("execute", &["Failed", "Failed"]);
         let flow = CeremonyFlow::default_flow();
         let patches = recommend_flow_patches(&history, &flow);
 

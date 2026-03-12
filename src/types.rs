@@ -169,7 +169,7 @@ pub enum SprintStatus {
     Retrospecting,
     Replenishing,
     Completed,
-    Failed,
+    Cancelled,
     Blocked,
 }
 
@@ -184,7 +184,7 @@ impl std::fmt::Display for SprintStatus {
             SprintStatus::Retrospecting => "retrospecting",
             SprintStatus::Replenishing => "replenishing",
             SprintStatus::Completed => "completed",
-            SprintStatus::Failed => "failed",
+            SprintStatus::Cancelled => "cancelled",
             SprintStatus::Blocked => "blocked",
         };
         write!(f, "{s}")
