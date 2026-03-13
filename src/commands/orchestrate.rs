@@ -301,15 +301,17 @@ pub async fn run(
         let all_stories: DataWrapper<Vec<serde_json::Value>> = client
             .get_with_params("/v1/stories", &[("epic_code", epic.code.as_str())])
             .await?;
-        // Client-side fallback — server may return all stories
-        // Whitelist: only ready/planned/draft are eligible. Blocked and parked are
-        // explicitly excluded — parked stories need deliberate un-parking, not auto-selection.
+        // Client-side fallback — server may return all stories.
+        // Filter via StoryStatus::is_eligible_for_sprint() whitelist.
         let mut eligible_stories: Vec<&serde_json::Value> = all_stories
             .data
             .iter()
             .filter(|s| {
                 s["epic_code"].as_str() == Some(epic.code.as_str())
-                    && matches!(s["status"].as_str(), Some("ready" | "planned" | "draft"))
+                    && s["status"]
+                        .as_str()
+                        .and_then(|st| serde_json::from_value::<StoryStatus>(json!(st)).ok())
+                        .is_some_and(|st| st.is_eligible_for_sprint())
             })
             .collect();
         // Sort: fewest attempts first (untried foundations before retried dependents),

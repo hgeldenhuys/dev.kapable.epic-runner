@@ -328,6 +328,18 @@ impl std::fmt::Display for StoryStatus {
     }
 }
 
+impl StoryStatus {
+    /// Whether this status makes a story eligible for automatic sprint selection.
+    /// Uses a whitelist: only ready, planned, and draft stories are eligible.
+    /// Blocked, parked, done, deployed, and in_progress are excluded.
+    pub fn is_eligible_for_sprint(&self) -> bool {
+        matches!(
+            self,
+            StoryStatus::Ready | StoryStatus::Planned | StoryStatus::Draft
+        )
+    }
+}
+
 // ── Epic ───────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
