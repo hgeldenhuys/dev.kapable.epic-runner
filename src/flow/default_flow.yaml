@@ -109,9 +109,10 @@ nodes:
       max_turns: 80
       loop_max: 5
       rubber_duck_after: 2
+      per_story: true
       agent: builder
       system_prompt: |
-        Executing sprint {{sprint.number}} of epic {{epic.code}}.
+        Executing story for sprint {{sprint.number}} of epic {{epic.code}}.
         Intent: {{epic.intent}}
 
         Product Brief:
@@ -122,17 +123,23 @@ nodes:
 
         {{previous_learnings}}
 
-        Stories for this sprint:
+        Your story:
+        {{story}}
+
+        All sprint stories (for dependency context):
         {{stories}}
       prompt: |
-        Execute all stories for sprint {{sprint.number}} of epic {{epic.code}}.
+        Execute this story for sprint {{sprint.number}} of epic {{epic.code}}:
 
-        Each story in {{stories}} has its acceptance_criteria, tasks, and dependencies
-        already populated from planning. Use those directly — they are the source of truth.
+        {{story}}
+
+        The story has acceptance_criteria, tasks, and dependencies already populated
+        from planning. Use those directly — they are the source of truth.
 
         Research context (if any) is at .epic-runner/research/{{epic.code}}/findings.md
 
-        For each story: implement, test, commit. Report what you did per story.
+        Implement all tasks, verify all acceptance criteria, then commit.
+        Report your results as structured JSON (see builder agent instructions).
 
   - key: judge_code
     node_type: agent
@@ -177,6 +184,7 @@ nodes:
         4. delta_stories: NEW stories discovered during this sprint
         5. deploy_ready (bool): Is the code ready to deploy?
         6. intent_satisfied (bool): Is the full epic mission complete?
+        7. next_sprint_goal (string): Refined goal for the NEXT sprint based on what was accomplished and what remains
 
   - key: gate_deploy
     node_type: gate
@@ -259,20 +267,26 @@ nodes:
       chrome: false
       heartbeat_timeout_secs: 180
       max_turns: 8
+      resume_stories: true
       agent: scrum-master
       system_prompt: |
         Sprint {{sprint.number}} retro for {{epic.code}}.
+        You are resuming this story's builder session to interview
+        the builder about what happened during execution.
       prompt: |
-        Sprint {{sprint.number}} retro for {{epic.code}}.
+        Sprint {{sprint.number}} per-story retro for {{epic.code}}.
+
+        This is a retro interview for story: {{story}}
 
         Ceremony results (structured):
         {{ceremony_results_json}}
 
         Supervisor decisions: {{supervisor_decisions}}
 
-        Analyze: what went well, what caused friction, patterns to codify,
-        discovered work items. Be specific — cite node names and costs.
-        Output structured JSON retro.
+        Interview: What went well in this story? What caused friction?
+        What patterns should we codify? Any discovered work items?
+        Be specific — cite files, decisions, and costs.
+        Output structured JSON retro for this story.
 
   - key: output
     node_type: output

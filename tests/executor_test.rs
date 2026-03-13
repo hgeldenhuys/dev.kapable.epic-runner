@@ -22,6 +22,7 @@ fn build_command_includes_all_flags() {
         node_id: None,
         node_label: None,
         max_turns: None,
+        extra_env: vec![],
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -72,6 +73,7 @@ fn build_command_resume_uses_resume_flag() {
         node_id: None,
         node_label: None,
         max_turns: None,
+        extra_env: vec![],
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -105,6 +107,7 @@ fn build_command_with_agent() {
         node_id: None,
         node_label: None,
         max_turns: None,
+        extra_env: vec![],
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -147,6 +150,7 @@ fn build_command_brief_flag() {
         node_id: None,
         node_label: None,
         max_turns: None,
+        extra_env: vec![],
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -178,6 +182,7 @@ fn build_command_max_turns_from_config() {
         node_id: None,
         node_label: None,
         max_turns: Some(15),
+        extra_env: vec![],
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd
@@ -211,6 +216,7 @@ fn build_command_max_turns_default() {
         node_id: None,
         node_label: None,
         max_turns: None,
+        extra_env: vec![],
     };
     let cmd = build_command(&config);
     let args: Vec<_> = cmd

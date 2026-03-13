@@ -206,15 +206,21 @@ pub async fn run(
             rebase_worktree_to_default_branch(&worktree_path);
         }
 
-        // Create sprint in DB with sprint goal derived from epic intent
+        // Create sprint in DB with sprint goal.
+        // First sprint inherits the epic goal. Subsequent sprints use the judge's
+        // refined next_sprint_goal from the previous sprint (if available).
         let session_id = Uuid::new_v4();
         let sprint_goal = if sprint_num == 1 {
             format!("Initial sprint: {}", &epic.intent)
         } else {
-            format!(
-                "Sprint {} — continue epic mission: {}",
-                sprint_num, &epic.intent
-            )
+            // Try to read next_sprint_goal from the previous sprint record
+            let prev_goal = read_previous_sprint_goal(client, &epic, sprint_num - 1).await;
+            prev_goal.unwrap_or_else(|| {
+                format!(
+                    "Sprint {} — continue epic mission: {}",
+                    sprint_num, &epic.intent
+                )
+            })
         };
         let sprint_body = json!({
             "epic_id": epic.id.to_string(),
@@ -449,6 +455,27 @@ pub async fn run(
 
     eprintln!("\nEpic runner finished for {}", epic.code);
     Ok(())
+}
+
+/// Read the previous sprint's next_sprint_goal from the DB.
+/// The judge sets this to guide what the next sprint should focus on.
+async fn read_previous_sprint_goal(
+    client: &ApiClient,
+    epic: &Epic,
+    prev_sprint_num: i32,
+) -> Option<String> {
+    let sprints: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params(
+            "/v1/er_sprints",
+            &[("epic_id", epic.id.to_string().as_str())],
+        )
+        .await;
+    let sprints = sprints.ok()?.data;
+    sprints
+        .iter()
+        .find(|s| s["number"].as_i64() == Some(prev_sprint_num as i64))
+        .and_then(|s| s["next_sprint_goal"].as_str())
+        .map(String::from)
 }
 
 /// Reset incomplete stories from a finished sprint back to "ready" so the next sprint

@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/hgeldenhuys/WebstormProjects/kapable/dev.kapable.epic-runner/hooks/track-files.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/hgeldenhuys/WebstormProjects/kapable/dev.kapable.epic-runner/hooks/stop-gate.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

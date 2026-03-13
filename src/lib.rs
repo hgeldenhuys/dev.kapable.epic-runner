@@ -1,5 +1,7 @@
 pub mod agents;
+pub mod api;
 pub mod api_client;
+pub mod builder;
 pub mod commands;
 pub mod config;
 pub mod event_sink;

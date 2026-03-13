@@ -64,6 +64,7 @@ mod tests {
             stories_to_regroom: None,
             action_items: None,
             changed_files: None,
+            next_sprint_goal: None,
         };
         assert!(!evaluate_verdict(&Some(low_confidence)));
 
@@ -80,6 +81,7 @@ mod tests {
             stories_to_regroom: None,
             action_items: None,
             changed_files: None,
+            next_sprint_goal: None,
         };
         assert!(!evaluate_verdict(&Some(not_satisfied)));
 
@@ -96,6 +98,7 @@ mod tests {
             stories_to_regroom: None,
             action_items: None,
             changed_files: None,
+            next_sprint_goal: None,
         };
         assert!(evaluate_verdict(&Some(good)));
     }

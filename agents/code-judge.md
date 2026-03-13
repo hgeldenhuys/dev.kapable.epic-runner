@@ -84,6 +84,16 @@ Output ONLY valid JSON:
   "build_passes": true,
   "tests_pass": true,
   "issues": [],
-  "summary": "2 of 3 stories completed. ER-044 needs re-grooming: implementation plan assumed X but actual pattern is Y."
+  "summary": "2 of 3 stories completed. ER-044 needs re-grooming.",
+  "next_sprint_goal": "Complete ER-044 (re-groomed) and add integration tests for the widget system"
 }
 ```
+
+### `next_sprint_goal`
+
+**Always include `next_sprint_goal`** — a focused goal for the next sprint based on what was accomplished and what remains. The first sprint inherits the epic goal; your refined goal should reflect:
+- What stories are still incomplete
+- What new work was discovered (delta_stories, action_items)
+- What the most impactful next step would be
+
+Be specific and actionable, not vague ("continue working on the epic").

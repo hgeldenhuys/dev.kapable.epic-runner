@@ -31,6 +31,9 @@ pub struct ExecutorConfig {
     /// Node identity for ceremony event attribution
     pub node_id: Option<String>,
     pub node_label: Option<String>,
+    /// Additional environment variables to set on the subprocess
+    #[allow(clippy::type_complexity)]
+    pub extra_env: Vec<(String, String)>,
 }
 
 pub struct ExecutorResult {
@@ -59,6 +62,11 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     // Disable Claude's built-in git commit/PR instructions — ceremony nodes
     // have their own git handling via system prompts and deploy nodes.
     cmd.env("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1");
+
+    // Set additional env vars (e.g., EPIC_RUNNER_STORY_FILE for stop hook)
+    for (key, val) in &config.extra_env {
+        cmd.env(key, val);
+    }
 
     if config.resume_session {
         cmd.arg("--resume").arg(config.session_id.to_string());

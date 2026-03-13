@@ -8,7 +8,7 @@ Rust CLI for epic-scoped autonomous sprint execution on the Kapable platform.
 - `epic-runner orchestrate <EPIC_CODE>` — thin supervisor: creates sprints, assigns stories, spawns `sprint-run` as child process, reads exit codes
 - `epic-runner sprint-run <SPRINT_ID>` — fat executor: loads ceremony YAML DAG, executes nodes via Kahn's BFS, dispatches Claude headless, streams events to DB in real-time
 
-**Ceremony-as-data:** Sprint ceremonies are defined in YAML DAGs (`src/flow/default_flow.yaml`), not hardcoded Rust. The flow engine supports 7 node types: Source, Harness, Agent, Gate, Loop, Merge, Output.
+**Ceremony-as-data:** Sprint ceremonies are defined in YAML DAGs (`src/flow/default_flow.yaml`), not hardcoded Rust. The flow engine supports 9 node types: Source, Harness, Agent, Gate, Loop, Merge, Output, Deploy, Promote.
 
 **Parallel execution:** Same-level nodes in Kahn's BFS execute concurrently via `futures::future::join_all`. Gate skip propagation and in-degree updates happen after each level completes.
 
@@ -28,12 +28,13 @@ src/
   executor.rs          # Claude Code subprocess dispatch
   stream.rs            # stream-json line parser
   supervisor.rs        # Stop-hook loop + rubber duck
+  builder.rs           # Builder output parsing + story write-back pipeline
   judge.rs             # Verdict parsing + confidence threshold
   scrum_master.rs      # Retrospective output parsing
   impediments.rs       # Cross-epic blocker queries
   flow/
     definition.rs      # CeremonyFlow, CeremonyNode types
-    default_flow.yaml  # 17-node ceremony DAG (embedded via include_str!)
+    default_flow.yaml  # 14-node ceremony DAG (embedded via include_str!)
     engine.rs          # Kahn's BFS executor with gate skipping
     loader.rs          # Flow loading cascade (file → config → embedded)
   commands/
@@ -57,6 +58,9 @@ agents/                  # Claude Code agent definitions (embedded in binary)
   ab-judge.md          # Chrome-based A/B comparison (sonnet)
   scrum-master.md      # Retrospective analysis (sonnet)
   rubber-duck.md       # Stuck-state debugging (haiku)
+hooks/
+  stop-gate.sh         # Stop hook: blocks session end until tasks complete
+  track-files.sh       # PostToolUse hook: tracks changed files per story
 tests/                 # Integration tests
 ```
 

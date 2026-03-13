@@ -57,6 +57,17 @@ pub struct CeremonyNodeConfig {
     pub gate_expect: Option<String>,
     pub loop_max: Option<i32>,
     pub rubber_duck_after: Option<i32>,
+    /// Execute one Claude session per story (story UUID = session ID).
+    /// When true, the Loop node iterates over stories individually rather than
+    /// dispatching all stories to a single session. Enables: stop hooks per story,
+    /// per-story retro via --resume, file tracking per story, context isolation.
+    #[serde(default)]
+    pub per_story: bool,
+    /// Resume each story's previous Claude session instead of creating a new one.
+    /// Used for per-story retro: resumes the builder session (story UUID) with
+    /// the scrum-master agent to interview about what happened during execution.
+    #[serde(default)]
+    pub resume_stories: bool,
     /// Maximum turns for the Claude CLI session (defaults to 50 if not set)
     pub max_turns: Option<u32>,
     pub agent: Option<String>,

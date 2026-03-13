@@ -64,6 +64,7 @@ pub fn detect_default_branch(repo_path: &str) -> String {
 }
 
 /// Context passed through the flow during execution.
+#[derive(Clone)]
 pub struct FlowContext {
     pub epic: Epic,
     pub sprint: Sprint,
@@ -84,6 +85,9 @@ pub struct FlowContext {
     /// Product definition of done — conditional rules the judge evaluates.
     /// Injected via {{product.definition_of_done}}.
     pub product_definition_of_done: String,
+    /// When executing per-story, holds the current story being processed.
+    /// Resolved as {{story}} in template interpolation.
+    pub current_story: Option<serde_json::Value>,
 }
 
 /// Result of executing one node.
@@ -97,6 +101,9 @@ pub struct NodeResult {
     pub judge_verdict: Option<JudgeVerdict>,
     pub supervisor_decisions: Vec<SupervisorDecision>,
     pub rubber_duck_sessions: Vec<RubberDuckSession>,
+    /// Parsed builder output (populated when per_story execution completes).
+    /// Downstream write-back logic uses this instead of re-parsing the output text.
+    pub builder_output: Option<crate::builder::BuilderOutput>,
 }
 
 /// Execute a ceremony flow using Kahn's topological sort with parallel level execution.
@@ -144,6 +151,7 @@ pub async fn execute_flow(
                     judge_verdict: None,
                     supervisor_decisions: vec![],
                     rubber_duck_sessions: vec![],
+                    builder_output: None,
                 },
             );
         }
@@ -212,6 +220,7 @@ pub async fn execute_flow(
                                 judge_verdict: None,
                                 supervisor_decisions: vec![],
                                 rubber_duck_sessions: vec![],
+                                builder_output: None,
                             })
                         }
                     };
@@ -226,6 +235,7 @@ pub async fn execute_flow(
                             judge_verdict: None,
                             supervisor_decisions: vec![],
                             rubber_duck_sessions: vec![],
+                            builder_output: None,
                         });
                     }
 
@@ -458,41 +468,123 @@ async fn execute_node(
             judge_verdict: None,
             supervisor_decisions: vec![],
             rubber_duck_sessions: vec![],
+            builder_output: None,
         }),
 
         CeremonyNodeType::Harness | CeremonyNodeType::Agent => {
-            let config = build_executor_config(node, ctx, input, upstream);
-            let node_key = node.key.clone();
-            let sink_clone = sink.clone();
-            let callback = move |e: SprintEvent| {
-                tracing::debug!(key = %node_key, event = e.event_type_str(), summary = %e.summary, "Agent event");
-                sink_clone.emit(e);
-            };
-            let result = executor::execute(config, &callback).await?;
+            if node.config.resume_stories {
+                // ── Per-story resume (retro interview) ────────────────
+                // Resume each story's builder session with a different agent
+                // (e.g., scrum-master) to interview about what happened.
+                let stories = ctx.stories.as_array().cloned().unwrap_or_default();
+                let mut all_outputs = Vec::new();
+                let mut total_cost: f64 = 0.0;
 
-            let status = if result.exit_code == 0 {
-                CeremonyStatus::Completed
+                for story_val in &stories {
+                    let story_id = story_val
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let story_code = story_val
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("???");
+
+                    let mut story_ctx = ctx.clone();
+                    story_ctx.current_story = Some(story_val.clone());
+
+                    let mut config = build_executor_config(node, &story_ctx, input, upstream);
+
+                    // Resume the builder's session (story UUID = session ID)
+                    if let Ok(uuid) = story_id.parse::<Uuid>() {
+                        config.session_id = uuid;
+                        config.resume_session = true;
+                    }
+
+                    tracing::info!(
+                        story_id,
+                        story_code,
+                        node = %node.key,
+                        "Per-story resume (retro interview)"
+                    );
+
+                    let nk = node.key.clone();
+                    let sc = story_code.to_string();
+                    let sink_clone = sink.clone();
+                    let callback = move |e: SprintEvent| {
+                        tracing::debug!(
+                            key = %nk,
+                            story = %sc,
+                            event = e.event_type_str(),
+                            "Per-story retro event"
+                        );
+                        sink_clone.emit(e);
+                    };
+                    let result = executor::execute(config, &callback).await?;
+
+                    if let Some(cost) = result.cost_usd {
+                        total_cost += cost;
+                    }
+                    if let Some(text) = result.result_text {
+                        all_outputs.push(format!("## {story_code}\n{text}"));
+                    }
+                }
+
+                let combined = if all_outputs.is_empty() {
+                    None
+                } else {
+                    Some(all_outputs.join("\n\n---\n\n"))
+                };
+
+                Ok(NodeResult {
+                    key: node.key.clone(),
+                    status: CeremonyStatus::Completed,
+                    output: combined,
+                    cost_usd: Some(total_cost),
+                    impediment_raised: false,
+                    judge_verdict: None,
+                    supervisor_decisions: vec![],
+                    rubber_duck_sessions: vec![],
+                    builder_output: None,
+                })
             } else {
-                CeremonyStatus::Failed
-            };
+                // ── Standard single-session dispatch ──────────────────
+                let config = build_executor_config(node, ctx, input, upstream);
+                let node_key = node.key.clone();
+                let sink_clone = sink.clone();
+                let callback = move |e: SprintEvent| {
+                    tracing::debug!(key = %node_key, event = e.event_type_str(), summary = %e.summary, "Agent event");
+                    sink_clone.emit(e);
+                };
+                let result = executor::execute(config, &callback).await?;
 
-            // Parse judge verdict if this is the judge node
-            let verdict = if node.key == "judge" {
-                crate::judge::parse_verdict(result.result_text.as_deref())
-            } else {
-                None
-            };
+                let status = if result.exit_code == 0 {
+                    CeremonyStatus::Completed
+                } else {
+                    CeremonyStatus::Failed
+                };
 
-            Ok(NodeResult {
-                key: node.key.clone(),
-                status,
-                output: result.result_text,
-                cost_usd: result.cost_usd,
-                impediment_raised: false,
-                judge_verdict: verdict,
-                supervisor_decisions: vec![],
-                rubber_duck_sessions: vec![],
-            })
+                // Parse judge verdict from the code judge node.
+                // The code judge produces the JudgeVerdict that drives story completion,
+                // sprint goal inheritance, and intent satisfaction.
+                let verdict = if node.key == "judge_code" || node.key == "judge" {
+                    crate::judge::parse_verdict(result.result_text.as_deref())
+                } else {
+                    None
+                };
+
+                Ok(NodeResult {
+                    key: node.key.clone(),
+                    status,
+                    output: result.result_text,
+                    cost_usd: result.cost_usd,
+                    impediment_raised: false,
+                    judge_verdict: verdict,
+                    supervisor_decisions: vec![],
+                    rubber_duck_sessions: vec![],
+                    builder_output: None,
+                })
+            }
         }
 
         CeremonyNodeType::Gate => {
@@ -534,44 +626,215 @@ async fn execute_node(
                 judge_verdict: None,
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
+                builder_output: None,
             })
         }
 
         CeremonyNodeType::Loop => {
-            let exec_config = build_executor_config(node, ctx, input, upstream);
-            let sup_config = supervisor::SupervisorConfig {
-                max_stop_hooks: node.config.loop_max.unwrap_or(5),
-                rubber_duck_after: node.config.rubber_duck_after.unwrap_or(2),
-                auto_abort_on_same_error: true,
-            };
+            if node.config.per_story {
+                // ── Per-story dispatch ─────────────────────────────────
+                // Each story gets its own Claude session (story UUID = session ID).
+                // Enables: stop hooks per story, --resume for retro, file tracking, context isolation.
+                let stories = ctx.stories.as_array().cloned().unwrap_or_default();
 
-            let node_key = node.key.clone();
-            let sink_clone = sink.clone();
-            let callback = move |e: SprintEvent| {
-                tracing::debug!(key = %node_key, event = e.event_type_str(), summary = %e.summary, "Supervised event");
-                sink_clone.emit(e);
-            };
-            let supervised = supervisor::supervise(exec_config, sup_config, &callback).await?;
+                let mut all_decisions = Vec::new();
+                let mut all_rubber_ducks = Vec::new();
+                let mut all_builder_stories = Vec::new();
+                let mut total_cost: f64 = 0.0;
+                let mut any_impediment = false;
+                let mut all_outputs = Vec::new();
+                let mut any_failed = false;
 
-            let impediment = supervised.impediment_raised.is_some();
-            let status = if impediment {
-                CeremonyStatus::Failed
-            } else if supervised.executor_result.exit_code == 0 {
-                CeremonyStatus::Completed
+                for story_val in &stories {
+                    let story_id = story_val
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let story_code = story_val
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("???");
+
+                    tracing::info!(
+                        story_id,
+                        story_code,
+                        node = %node.key,
+                        "Per-story dispatch"
+                    );
+
+                    // Build a per-story context with current_story set
+                    let mut story_ctx = ctx.clone();
+                    story_ctx.current_story = Some(story_val.clone());
+
+                    let mut exec_config = build_executor_config(node, &story_ctx, input, upstream);
+
+                    // Override session_id with story UUID for session isolation
+                    if let Ok(uuid) = story_id.parse::<Uuid>() {
+                        exec_config.session_id = uuid;
+                    }
+
+                    // Write story JSON to disk for stop-hook enforcement.
+                    // The stop hook reads this file to check task completion.
+                    let stories_dir =
+                        std::path::Path::new(&ctx.repo_path).join(".epic-runner/stories");
+                    let _ = std::fs::create_dir_all(&stories_dir);
+                    let story_file = stories_dir.join(format!("{}.json", story_id));
+                    if let Ok(json) = serde_json::to_string_pretty(story_val) {
+                        let _ = std::fs::write(&story_file, &json);
+                    }
+
+                    // Set env vars for hooks: stop gate + file tracking
+                    let changed_files_path = stories_dir
+                        .join(format!("{}.changed_files", story_id))
+                        .to_string_lossy()
+                        .to_string();
+                    exec_config.extra_env = vec![
+                        (
+                            "EPIC_RUNNER_STORY_FILE".to_string(),
+                            story_file.to_string_lossy().to_string(),
+                        ),
+                        ("EPIC_RUNNER_STORY_CODE".to_string(), story_code.to_string()),
+                        (
+                            "EPIC_RUNNER_CHANGED_FILES".to_string(),
+                            changed_files_path.clone(),
+                        ),
+                    ];
+
+                    let sup_config = supervisor::SupervisorConfig {
+                        max_stop_hooks: node.config.loop_max.unwrap_or(5),
+                        rubber_duck_after: node.config.rubber_duck_after.unwrap_or(2),
+                        auto_abort_on_same_error: true,
+                    };
+
+                    let nk = node.key.clone();
+                    let sc = story_code.to_string();
+                    let sink_clone = sink.clone();
+                    let callback = move |e: SprintEvent| {
+                        tracing::debug!(
+                            key = %nk,
+                            story = %sc,
+                            event = e.event_type_str(),
+                            summary = %e.summary,
+                            "Per-story supervised event"
+                        );
+                        sink_clone.emit(e);
+                    };
+
+                    let supervised =
+                        supervisor::supervise(exec_config, sup_config, &callback).await?;
+
+                    // Accumulate results
+                    if let Some(cost) = supervised.executor_result.cost_usd {
+                        total_cost += cost;
+                    }
+                    if supervised.impediment_raised.is_some() {
+                        any_impediment = true;
+                    }
+                    if supervised.executor_result.exit_code != 0 {
+                        any_failed = true;
+                    }
+                    all_decisions.extend(supervised.decisions);
+                    all_rubber_ducks.extend(supervised.rubber_duck_sessions);
+
+                    // Parse builder output from this story's session
+                    if let Some(mut builder_out) = crate::builder::parse_builder_output(
+                        supervised.executor_result.result_text.as_deref(),
+                    ) {
+                        // Merge hook-tracked changed_files into builder output
+                        let hook_files: Vec<String> = std::fs::read_to_string(&changed_files_path)
+                            .unwrap_or_default()
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(String::from)
+                            .collect();
+                        if !hook_files.is_empty() {
+                            for story_result in &mut builder_out.stories {
+                                let mut merged = story_result.changed_files.clone();
+                                for f in &hook_files {
+                                    if !merged.contains(f) {
+                                        merged.push(f.clone());
+                                    }
+                                }
+                                story_result.changed_files = merged;
+                            }
+                        }
+                        all_builder_stories.extend(builder_out.stories);
+                    }
+
+                    if let Some(text) = supervised.executor_result.result_text {
+                        all_outputs.push(format!("## {story_code}\n{text}"));
+                    }
+                }
+
+                let status = if any_impediment || any_failed {
+                    CeremonyStatus::Failed
+                } else {
+                    CeremonyStatus::Completed
+                };
+
+                let combined_output = if all_outputs.is_empty() {
+                    None
+                } else {
+                    Some(all_outputs.join("\n\n---\n\n"))
+                };
+
+                let builder_output = if all_builder_stories.is_empty() {
+                    None
+                } else {
+                    Some(crate::builder::BuilderOutput {
+                        stories: all_builder_stories,
+                    })
+                };
+
+                Ok(NodeResult {
+                    key: node.key.clone(),
+                    status,
+                    output: combined_output,
+                    cost_usd: Some(total_cost),
+                    impediment_raised: any_impediment,
+                    judge_verdict: None,
+                    supervisor_decisions: all_decisions,
+                    rubber_duck_sessions: all_rubber_ducks,
+                    builder_output,
+                })
             } else {
-                CeremonyStatus::Failed
-            };
+                // ── Single-session dispatch (original behavior) ───────
+                let exec_config = build_executor_config(node, ctx, input, upstream);
+                let sup_config = supervisor::SupervisorConfig {
+                    max_stop_hooks: node.config.loop_max.unwrap_or(5),
+                    rubber_duck_after: node.config.rubber_duck_after.unwrap_or(2),
+                    auto_abort_on_same_error: true,
+                };
 
-            Ok(NodeResult {
-                key: node.key.clone(),
-                status,
-                output: supervised.executor_result.result_text,
-                cost_usd: supervised.executor_result.cost_usd,
-                impediment_raised: impediment,
-                judge_verdict: None,
-                supervisor_decisions: supervised.decisions,
-                rubber_duck_sessions: supervised.rubber_duck_sessions,
-            })
+                let node_key = node.key.clone();
+                let sink_clone = sink.clone();
+                let callback = move |e: SprintEvent| {
+                    tracing::debug!(key = %node_key, event = e.event_type_str(), summary = %e.summary, "Supervised event");
+                    sink_clone.emit(e);
+                };
+                let supervised = supervisor::supervise(exec_config, sup_config, &callback).await?;
+
+                let impediment = supervised.impediment_raised.is_some();
+                let status = if impediment {
+                    CeremonyStatus::Failed
+                } else if supervised.executor_result.exit_code == 0 {
+                    CeremonyStatus::Completed
+                } else {
+                    CeremonyStatus::Failed
+                };
+
+                Ok(NodeResult {
+                    key: node.key.clone(),
+                    status,
+                    output: supervised.executor_result.result_text,
+                    cost_usd: supervised.executor_result.cost_usd,
+                    impediment_raised: impediment,
+                    judge_verdict: None,
+                    supervisor_decisions: supervised.decisions,
+                    rubber_duck_sessions: supervised.rubber_duck_sessions,
+                    builder_output: None,
+                })
+            }
         }
 
         CeremonyNodeType::Merge => {
@@ -585,6 +848,7 @@ async fn execute_node(
                 judge_verdict: None,
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
+                builder_output: None,
             })
         }
 
@@ -597,6 +861,7 @@ async fn execute_node(
             judge_verdict: None,
             supervisor_decisions: vec![],
             rubber_duck_sessions: vec![],
+            builder_output: None,
         }),
 
         CeremonyNodeType::Deploy => execute_deploy_node(node, ctx, sink).await,
@@ -933,6 +1198,7 @@ async fn execute_deploy_node(
                 judge_verdict: None,
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
+                builder_output: None,
             });
         }
     };
@@ -1157,6 +1423,7 @@ async fn execute_deploy_node(
         judge_verdict: None,
         supervisor_decisions: vec![],
         rubber_duck_sessions: vec![],
+        builder_output: None,
     })
 }
 
@@ -1184,6 +1451,7 @@ async fn execute_promote_node(
                 judge_verdict: None,
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
+                builder_output: None,
             });
         }
     };
@@ -1241,6 +1509,7 @@ async fn execute_promote_node(
                 judge_verdict: None,
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
+                builder_output: None,
             }
         }
         Ok(r) => {
@@ -1409,6 +1678,7 @@ fn deploy_failed(node: &CeremonyNode, reason: &str) -> NodeResult {
         judge_verdict: None,
         supervisor_decisions: vec![],
         rubber_duck_sessions: vec![],
+        builder_output: None,
     }
 }
 
@@ -1454,6 +1724,7 @@ fn build_executor_config(
         node_id: Some(node.key.clone()),
         node_label: Some(node.label.clone()),
         max_turns: c.max_turns,
+        extra_env: vec![],
     }
 }
 
@@ -1519,6 +1790,13 @@ fn interpolate(
         .unwrap_or("");
     let ab_urls = deploy_output; // The full deploy output contains A/B URLs section
 
+    // Resolve {{story}} — single story JSON when in per-story mode
+    let current_story_json = ctx
+        .current_story
+        .as_ref()
+        .map(|s| serde_json::to_string_pretty(s).unwrap_or_default())
+        .unwrap_or_default();
+
     template
         .replace("{{input}}", input)
         .replace("{{ceremony_results}}", &ceremony_results)
@@ -1550,6 +1828,7 @@ fn interpolate(
             "{{stories}}",
             &serde_json::to_string_pretty(&ctx.stories).unwrap_or_default(),
         )
+        .replace("{{story}}", &current_story_json)
 }
 
 /// Get the checkpoint file path for a sprint session.

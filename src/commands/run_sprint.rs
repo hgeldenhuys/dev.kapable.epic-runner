@@ -207,7 +207,10 @@ pub async fn run(
         epic: epic.clone(),
         sprint: sprint.clone(),
         stories,
-        default_branch: engine::detect_default_branch(&resolved_repo_path),
+        default_branch: product
+            .default_branch
+            .clone()
+            .unwrap_or_else(|| engine::detect_default_branch(&resolved_repo_path)),
         repo_path: resolved_repo_path,
         model_override: args.model.clone(),
         effort_override: args.effort.clone(),
@@ -216,6 +219,7 @@ pub async fn run(
         previous_learnings,
         product_brief,
         product_definition_of_done: product_dod,
+        current_story: None,
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
@@ -258,6 +262,36 @@ pub async fn run(
     // see pre-planned stories and skip re-planning unless the judge instructs otherwise.
     if let Some(groom_result) = results.iter().find(|r| r.key == "groom") {
         write_groom_results_to_stories(client, &sprint, groom_result).await;
+    }
+
+    // 8c. Write builder results back to story records in DB.
+    // Per-story mode produces a BuilderOutput with per-story task completion,
+    // AC verification, changed files, and log entries. PATCH each story record.
+    if let Some(execute_result) = results.iter().find(|r| r.key == "execute") {
+        if let Some(ref builder_output) = execute_result.builder_output {
+            let patched = crate::builder::write_builder_results_to_stories(
+                client,
+                builder_output,
+                &sprint.session_id.to_string(),
+            )
+            .await;
+            tracing::info!(
+                patched,
+                total = builder_output.stories.len(),
+                "Builder results written to story records"
+            );
+        }
+    }
+
+    // 8d. Generate sprint changelog from builder results + judge verdict
+    if let Some(execute_result) = results.iter().find(|r| r.key == "execute") {
+        if let Some(ref builder_output) = execute_result.builder_output {
+            let changelog_path =
+                generate_sprint_changelog(&epic, &sprint, builder_output, &results);
+            if let Some(path) = changelog_path {
+                tracing::info!(path = %path.display(), "Sprint changelog generated");
+            }
+        }
     }
 
     // 9. Determine outcome
@@ -368,18 +402,27 @@ pub async fn run(
         "mission_progress": judge_verdict.as_ref().and_then(|v| v.mission_progress),
     });
 
+    // Include next_sprint_goal from judge verdict (if provided) so the orchestrator
+    // can read it from the sprint record and use it for the next sprint's goal.
+    let mut sprint_patch = json!({
+        "status": final_status,
+        "finished_at": chrono::Utc::now().to_rfc3339(),
+        "ceremony_log": ceremony_log,
+        "velocity": velocity,
+        "cost_usd": total_cost,
+        "ceremony_costs": ceremony_costs,
+    });
+    if let Some(ref verdict) = judge_verdict {
+        if let Some(ref next_goal) = verdict.next_sprint_goal {
+            sprint_patch
+                .as_object_mut()
+                .unwrap()
+                .insert("next_sprint_goal".to_string(), json!(next_goal));
+        }
+    }
+
     if let Err(e) = client
-        .patch::<_, serde_json::Value>(
-            &format!("/v1/er_sprints/{}", sprint.id),
-            &json!({
-                "status": final_status,
-                "finished_at": chrono::Utc::now().to_rfc3339(),
-                "ceremony_log": ceremony_log,
-                "velocity": velocity,
-                "cost_usd": total_cost,
-                "ceremony_costs": ceremony_costs,
-            }),
-        )
+        .patch::<_, serde_json::Value>(&format!("/v1/er_sprints/{}", sprint.id), &sprint_patch)
         .await
     {
         tracing::error!(error = %e, "Failed to write sprint results to DB — results lost");
@@ -1116,4 +1159,108 @@ fn replace_section(doc: &str, header: &str, replacement: &str) -> String {
     }
 
     result
+}
+
+/// Generate a sprint changelog from builder results + ceremony outcomes.
+/// Written to `.epic-runner/changelogs/EPIC-sprint-N.md` in the repo.
+/// Returns the path if successfully written.
+fn generate_sprint_changelog(
+    epic: &Epic,
+    sprint: &Sprint,
+    builder_output: &crate::builder::BuilderOutput,
+    results: &[engine::NodeResult],
+) -> Option<std::path::PathBuf> {
+    let mut changelog = String::new();
+    changelog.push_str(&format!(
+        "# Changelog — {} Sprint {}\n\n",
+        epic.code, sprint.number
+    ));
+    changelog.push_str(&format!(
+        "**Date:** {}\n",
+        chrono::Utc::now().format("%Y-%m-%d")
+    ));
+    changelog.push_str(&format!("**Epic:** {} — {}\n", epic.code, epic.title));
+    if let Some(ref goal) = sprint.goal {
+        changelog.push_str(&format!("**Sprint Goal:** {}\n", goal));
+    }
+    changelog.push('\n');
+
+    // Stories section
+    changelog.push_str("## Stories\n\n");
+    for story in &builder_output.stories {
+        let status_mark = match story.status.as_str() {
+            "done" => "[x]",
+            "blocked" => "[-]",
+            _ => "[ ]",
+        };
+        let code = story.code.as_deref().unwrap_or(&story.id);
+        changelog.push_str(&format!(
+            "- {} **{}** — {}\n",
+            status_mark, code, story.status
+        ));
+
+        for task in &story.tasks {
+            let mark = if task.done { "x" } else { " " };
+            changelog.push_str(&format!("  - [{}] {}", mark, task.description));
+            if let Some(ref outcome) = task.outcome {
+                changelog.push_str(&format!(" — {}", outcome));
+            }
+            changelog.push('\n');
+        }
+
+        for ac in &story.acceptance_criteria {
+            let mark = if ac.verified { "x" } else { " " };
+            changelog.push_str(&format!("  - AC [{}] {}", mark, ac.criterion));
+            if let Some(ref evidence) = ac.evidence {
+                changelog.push_str(&format!(" — {}", evidence));
+            }
+            changelog.push('\n');
+        }
+
+        if let Some(ref reason) = story.blocked_reason {
+            changelog.push_str(&format!("  - Blocked: {}\n", reason));
+        }
+        changelog.push('\n');
+    }
+
+    // Changed files section
+    if !builder_output
+        .stories
+        .iter()
+        .all(|s| s.changed_files.is_empty())
+    {
+        changelog.push_str("## Changed Files\n\n");
+        let mut unique_files: Vec<&str> = builder_output
+            .stories
+            .iter()
+            .flat_map(|s| s.changed_files.iter().map(|f| f.as_str()))
+            .collect();
+        unique_files.sort();
+        unique_files.dedup();
+        for f in &unique_files {
+            changelog.push_str(&format!("- `{}`\n", f));
+        }
+        changelog.push('\n');
+    }
+
+    // Ceremony cost summary
+    let total_cost: f64 = results.iter().filter_map(|r| r.cost_usd).sum();
+    changelog.push_str("## Ceremony Costs\n\n");
+    changelog.push_str("| Node | Cost |\n|------|------|\n");
+    for r in results {
+        if let Some(cost) = r.cost_usd {
+            changelog.push_str(&format!("| {} | ${:.4} |\n", r.key, cost));
+        }
+    }
+    changelog.push_str(&format!("| **Total** | **${:.4}** |\n\n", total_cost));
+
+    // Write to disk
+    let changelog_dir = std::path::PathBuf::from(".epic-runner/changelogs");
+    if std::fs::create_dir_all(&changelog_dir).is_err() {
+        return None;
+    }
+    let filename = format!("{}-sprint-{}.md", epic.code, sprint.number);
+    let path = changelog_dir.join(&filename);
+    std::fs::write(&path, &changelog).ok()?;
+    Some(path)
 }

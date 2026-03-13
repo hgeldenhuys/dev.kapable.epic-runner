@@ -11,12 +11,16 @@ path = "src/lib.rs"
 name = "epic-runner"
 path = "src/main.rs"
 
+[[bin]]
+name = "epic-runner-api"
+path = "src/api_main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -30,6 +34,11 @@ futures = "0.3"
 owo-colors = "4"
 libc = "0.2"
 urlencoding = "2"
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+async-stream = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 tempfile = "3"

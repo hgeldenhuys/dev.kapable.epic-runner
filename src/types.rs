@@ -25,6 +25,10 @@ pub struct Product {
     /// Product-level definition of done — the judge evaluates every story against these checks
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition_of_done: Option<Vec<DoDCheckItem>>,
+    /// Override for the default branch (main, master, develop, etc.).
+    /// If not set, detect_default_branch() probes the remote at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -362,6 +366,11 @@ pub struct JudgeVerdict {
     /// v4: All files changed during this sprint (from git diff)
     #[serde(default)]
     pub changed_files: Option<Vec<String>>,
+    /// v5: Refined sprint goal for the NEXT sprint.
+    /// First sprint inherits the epic goal; the judge can refine it for subsequent sprints
+    /// based on what was accomplished and what remains.
+    #[serde(default)]
+    pub next_sprint_goal: Option<String>,
 }
 
 /// A story discovered by the judge during sprint evaluation, to be added back to the backlog.
