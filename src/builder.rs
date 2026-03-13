@@ -83,14 +83,43 @@ pub struct BuilderACResult {
 /// The builder may output a `{"stories": [...]}` object or the inner object
 /// may be nested in commentary.
 pub fn parse_builder_output(text: Option<&str>) -> Option<BuilderOutput> {
-    let text = text?;
+    let text = match text {
+        Some(t) if !t.is_empty() => t,
+        Some(_) => {
+            tracing::warn!("Builder output is empty — no structured results to parse");
+            return None;
+        }
+        None => {
+            tracing::warn!(
+                "Builder produced no result_text — stop hook may have allowed exit without output"
+            );
+            return None;
+        }
+    };
 
-    let value = crate::json_extract::extract_json_object(text)?;
+    let value = match crate::json_extract::extract_json_object(text) {
+        Some(v) => v,
+        None => {
+            let preview: String = text.chars().take(200).collect();
+            tracing::warn!(
+                text_len = text.len(),
+                preview = %preview,
+                "No JSON object found in builder output — raw text did not contain parseable JSON"
+            );
+            return None;
+        }
+    };
 
     // Try 1: Full BuilderOutput with "stories" array
     if value.get("stories").and_then(|s| s.as_array()).is_some() {
-        if let Ok(output) = serde_json::from_value::<BuilderOutput>(value.clone()) {
-            return Some(output);
+        match serde_json::from_value::<BuilderOutput>(value.clone()) {
+            Ok(output) => return Some(output),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "JSON has 'stories' array but failed to deserialize as BuilderOutput"
+                );
+            }
         }
     }
 
@@ -98,13 +127,29 @@ pub fn parse_builder_output(text: Option<&str>) -> Option<BuilderOutput> {
     // Require at least an "id" or "status" field to distinguish from random JSON,
     // since all fields are #[serde(default)].
     if value.get("id").is_some() || value.get("status").is_some() {
-        if let Ok(story) = serde_json::from_value::<BuilderStoryResult>(value) {
-            return Some(BuilderOutput {
-                stories: vec![story],
-            });
+        match serde_json::from_value::<BuilderStoryResult>(value.clone()) {
+            Ok(story) => {
+                return Some(BuilderOutput {
+                    stories: vec![story],
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "JSON has id/status but failed to deserialize as BuilderStoryResult"
+                );
+            }
         }
     }
 
+    let keys: Vec<&str> = value
+        .as_object()
+        .map(|o| o.keys().map(|k| k.as_str()).collect())
+        .unwrap_or_default();
+    tracing::warn!(
+        json_keys = ?keys,
+        "Builder output JSON found but doesn't match BuilderOutput or BuilderStoryResult schema"
+    );
     None
 }
 
