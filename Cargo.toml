@@ -11,10 +11,6 @@ path = "src/lib.rs"
 name = "epic-runner"
 path = "src/main.rs"
 
-[[bin]]
-name = "epic-runner-api"
-path = "src/api_main.rs"
-
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
