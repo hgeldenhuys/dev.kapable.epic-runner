@@ -160,6 +160,7 @@ pub async fn execute(
                                         node_label: config.node_label.clone(),
                                         summary: format!("System: {subtype}"),
                                         detail: None,
+                                        cost_usd: None,
                                         timestamp: chrono::Utc::now(),
                                     };
                                     event_callback(se.clone());
@@ -186,6 +187,7 @@ pub async fn execute(
                                                 node_label: config.node_label.clone(),
                                                 summary: msg,
                                                 detail: None,
+                                                cost_usd: None,
                                                 timestamp: chrono::Utc::now(),
                                             };
                                             event_callback(se.clone());
@@ -200,6 +202,7 @@ pub async fn execute(
                                                 node_label: config.node_label.clone(),
                                                 summary: format!("Tool: {name}"),
                                                 detail: None,
+                                                cost_usd: None,
                                                 timestamp: chrono::Utc::now(),
                                             };
                                             event_callback(se.clone());

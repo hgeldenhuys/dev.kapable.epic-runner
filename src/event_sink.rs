@@ -201,6 +201,7 @@ async fn flush_batch(
                 "node_label": event.node_label,
                 "summary": event.summary,
                 "detail": event.detail,
+                "cost_usd": event.cost_usd,
                 "timestamp": event.timestamp.to_rfc3339(),
             })
         })

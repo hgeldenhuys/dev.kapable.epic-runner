@@ -199,6 +199,7 @@ pub async fn run(
             "nodes": flow.nodes.len(),
             "epic_code": epic.code,
         })),
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -246,6 +247,7 @@ pub async fn run(
                 node_label: None,
                 summary: format!("Sprint {} cancelled (crash): {}", sprint.number, e),
                 detail: Some(json!({ "cancelled_reason": e.to_string() })),
+                cost_usd: None,
                 timestamp: chrono::Utc::now(),
             });
             // Mark sprint as cancelled — it was interrupted, not failed.
@@ -358,6 +360,7 @@ pub async fn run(
             "impediment": any_impediment,
             "total_cost_usd": results.iter().filter_map(|r| r.cost_usd).sum::<f64>(),
         })),
+        cost_usd: Some(results.iter().filter_map(|r| r.cost_usd).sum::<f64>()),
         timestamp: chrono::Utc::now(),
     });
 

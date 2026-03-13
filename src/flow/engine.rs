@@ -276,6 +276,7 @@ pub async fn execute_flow(
                             "node_key": node.key,
                             "node_type": format!("{:?}", node.node_type),
                         })),
+                        cost_usd: None,
                         timestamp: chrono::Utc::now(),
                     });
 
@@ -295,6 +296,7 @@ pub async fn execute_flow(
                             "status": format!("{:?}", result.status),
                             "cost_usd": result.cost_usd,
                         })),
+                        cost_usd: result.cost_usd,
                         timestamp: chrono::Utc::now(),
                     });
 
@@ -529,6 +531,7 @@ async fn execute_node(
                             "status": "Skipped",
                             "reason": "all_stories_have_acceptance_criteria",
                         })),
+                        cost_usd: Some(0.0),
                         timestamp: chrono::Utc::now(),
                     });
                     return Ok(NodeResult {
@@ -998,6 +1001,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: "Committing worktree changes".to_string(),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1155,6 +1159,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: format!("Merging {} into main", worktree_branch),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1215,6 +1220,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: "Pushing to origin/main".to_string(),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1237,6 +1243,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: format!("Syncing {} to main HEAD", worktree_branch),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
     // Use `git rebase <default_branch>` from within the worktree directory — `git branch -f`
@@ -1296,6 +1303,7 @@ async fn execute_deploy_node(
                 node_label: Some(node.label.clone()),
                 summary: msg.to_string(),
                 detail: None,
+                cost_usd: None,
                 timestamp: chrono::Utc::now(),
             });
             return Ok(NodeResult {
@@ -1331,6 +1339,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: format!("Acquiring deploy lock for {}", app_id),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1355,6 +1364,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: format!("Triggering Connect App Pipeline for {}", app_id),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1420,6 +1430,7 @@ async fn execute_deploy_node(
         detail: pipeline_run_id
             .as_ref()
             .map(|id| serde_json::json!({"pipeline_run_id": id})),
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1517,6 +1528,7 @@ async fn execute_deploy_node(
         node_label: Some(node.label.clone()),
         summary: summary.clone(),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1581,6 +1593,7 @@ async fn execute_promote_node(
         node_label: Some(node.label.clone()),
         summary: format!("Promoting slot '{}' to primary (100% traffic)", slot_name),
         detail: None,
+        cost_usd: None,
         timestamp: chrono::Utc::now(),
     });
 
@@ -1610,6 +1623,7 @@ async fn execute_promote_node(
                 node_label: Some(node.label.clone()),
                 summary: summary.clone(),
                 detail: None,
+                cost_usd: None,
                 timestamp: chrono::Utc::now(),
             });
             NodeResult {

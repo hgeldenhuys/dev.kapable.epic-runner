@@ -573,6 +573,7 @@ pub struct SprintEvent {
     pub node_label: Option<String>,
     pub summary: String,
     pub detail: Option<serde_json::Value>,
+    pub cost_usd: Option<f64>,
     pub timestamp: DateTime<Utc>,
 }
 
