@@ -1,5 +1,5 @@
 use clap::{Args, Subcommand};
-use comfy_table::{Cell, Table};
+use comfy_table::{Cell, Color, Table};
 use serde_json::json;
 
 use super::CliConfig;
@@ -231,17 +231,33 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&filtered)?);
             } else {
                 let mut table = Table::new();
-                table.set_header(vec!["Code", "Title", "Epic", "Status", "Pts", "Planned"]);
+                table.set_header(vec![
+                    "Code", "Title", "Epic", "Status", "Tasks", "ACs", "Pts", "Planned",
+                ]);
                 for row in &filtered {
                     let s: Story = serde_json::from_value((*row).clone())?;
                     let id_short = s.id.to_string();
                     let code_display = s.code.as_deref().unwrap_or(&id_short[..8]);
                     let planned = s.planned_at.as_deref().map(|d| &d[..10]).unwrap_or("—");
+
+                    let (tasks_done, tasks_total) = s
+                        .tasks
+                        .as_ref()
+                        .map(|t| (t.iter().filter(|task| task.done).count(), t.len()))
+                        .unwrap_or((0, 0));
+                    let (acs_verified, acs_total) = s
+                        .acceptance_criteria
+                        .as_ref()
+                        .map(|a| (a.iter().filter(|ac| ac.verified).count(), a.len()))
+                        .unwrap_or((0, 0));
+
                     table.add_row(vec![
                         Cell::new(code_display),
                         Cell::new(truncate(&s.title, 40)),
                         Cell::new(s.epic_code.as_deref().unwrap_or("-")),
                         Cell::new(s.status.to_string()),
+                        colored_fraction(tasks_done, tasks_total),
+                        colored_fraction(acs_verified, acs_total),
                         Cell::new(s.points.map(|p| p.to_string()).unwrap_or("-".to_string())),
                         Cell::new(planned),
                     ]);
@@ -412,6 +428,23 @@ async fn resolve_story_id(
     }
     // Fall back to UUID prefix resolution
     Ok(client.resolve_id("stories", id_or_code).await?)
+}
+
+/// Format a done/total fraction as a colored cell.
+/// Green = all done, Yellow = partial, Red = none done, "-" = empty.
+fn colored_fraction(done: usize, total: usize) -> Cell {
+    if total == 0 {
+        return Cell::new("-");
+    }
+    let text = format!("{done}/{total}");
+    let color = if done == total {
+        Color::Green
+    } else if done > 0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+    Cell::new(text).fg(color)
 }
 
 fn truncate(s: &str, max: usize) -> &str {
