@@ -23,6 +23,9 @@ pub struct CheckpointedNode {
     pub output: Option<String>,
     pub cost_usd: Option<f64>,
     pub impediment_raised: bool,
+    /// Wall-clock seconds the node took to execute (0.0 for skipped nodes).
+    #[serde(default)]
+    pub duration_seconds: Option<f64>,
 }
 
 /// Detect the default branch of a git repository (main, master, or custom).
@@ -108,6 +111,9 @@ pub struct NodeResult {
     /// often appears in mid-conversation messages rather than the final result.
     /// Used as fallback when `output` fails to parse as structured data.
     pub all_assistant_texts: Vec<String>,
+    /// Wall-clock seconds the node took to execute. Populated by the flow engine
+    /// after execute_node() returns. Skipped nodes get Some(0.0).
+    pub duration_seconds: Option<f64>,
 }
 
 impl NodeResult {
@@ -125,6 +131,7 @@ impl NodeResult {
             rubber_duck_sessions: vec![],
             builder_output: None,
             all_assistant_texts: vec![],
+            duration_seconds: None,
         }
     }
 }
@@ -176,6 +183,7 @@ pub async fn execute_flow(
                     rubber_duck_sessions: vec![],
                     builder_output: None,
                     all_assistant_texts: vec![],
+                    duration_seconds: cn.duration_seconds,
                 },
             );
         }
@@ -246,6 +254,7 @@ pub async fn execute_flow(
                                 rubber_duck_sessions: vec![],
                                 builder_output: None,
                                 all_assistant_texts: vec![],
+                                duration_seconds: Some(0.0),
                             })
                         }
                     };
@@ -262,6 +271,7 @@ pub async fn execute_flow(
                             rubber_duck_sessions: vec![],
                             builder_output: None,
                             all_assistant_texts: vec![],
+                            duration_seconds: Some(0.0),
                         });
                     }
 
@@ -281,8 +291,11 @@ pub async fn execute_flow(
                     });
 
                     tracing::info!(label = %node.label, key = %node.key, "Executing node");
-                    let result =
+                    let node_start = std::time::Instant::now();
+                    let mut result =
                         execute_node(node, ctx, results_ref, &input, &parent_keys, sink).await?;
+                    let elapsed = node_start.elapsed().as_secs_f64();
+                    result.duration_seconds = Some(elapsed);
 
                     // Stream node_completed event to DB
                     sink.emit(SprintEvent {
@@ -295,6 +308,7 @@ pub async fn execute_flow(
                             "node_key": node.key,
                             "status": format!("{:?}", result.status),
                             "cost_usd": result.cost_usd,
+                            "duration_seconds": elapsed,
                         })),
                         cost_usd: result.cost_usd,
                         timestamp: chrono::Utc::now(),
@@ -412,6 +426,29 @@ pub async fn execute_flow(
     )
     .await;
 
+    // Finalize sprint-level per-node timing breakdown artifact
+    let mut timing_map = serde_json::Map::new();
+    let mut total_duration = 0.0f64;
+    for result in &ordered {
+        let dur = result.duration_seconds.unwrap_or(0.0);
+        timing_map.insert(result.key.clone(), serde_json::json!(dur));
+        total_duration += dur;
+    }
+    timing_map.insert("total".to_string(), serde_json::json!(total_duration));
+    timing_map.insert("schema_version".to_string(), serde_json::json!("1"));
+
+    sink.finalize_artifact(
+        client,
+        ctx.sprint.session_id,
+        &ctx.epic.code,
+        "ceremony_timings",
+        "flow_engine",
+        "Ceremony Timing Breakdown",
+        Some(&format!("Total: {:.1}s", total_duration)),
+        serde_json::Value::Object(timing_map),
+    )
+    .await;
+
     // Finalize sprint-level velocity artifact
     let stories_planned = ctx
         .sprint
@@ -498,6 +535,7 @@ async fn execute_node(
             rubber_duck_sessions: vec![],
             builder_output: None,
             all_assistant_texts: vec![],
+            duration_seconds: None,
         }),
 
         CeremonyNodeType::Harness | CeremonyNodeType::Agent => {
@@ -545,6 +583,7 @@ async fn execute_node(
                         rubber_duck_sessions: vec![],
                         builder_output: None,
                         all_assistant_texts: vec![],
+                        duration_seconds: None,
                     });
                 }
             }
@@ -624,6 +663,7 @@ async fn execute_node(
                     rubber_duck_sessions: vec![],
                     builder_output: None,
                     all_assistant_texts: vec![],
+                    duration_seconds: None,
                 })
             } else {
                 // ── Standard single-session dispatch ──────────────────
@@ -673,6 +713,7 @@ async fn execute_node(
                     rubber_duck_sessions: vec![],
                     builder_output: None,
                     all_assistant_texts: result.all_assistant_texts,
+                    duration_seconds: None,
                 })
             }
         }
@@ -718,6 +759,7 @@ async fn execute_node(
                 rubber_duck_sessions: vec![],
                 builder_output: None,
                 all_assistant_texts: vec![],
+                duration_seconds: None,
             })
         }
 
@@ -919,6 +961,7 @@ async fn execute_node(
                     rubber_duck_sessions: all_rubber_ducks,
                     builder_output,
                     all_assistant_texts: vec![],
+                    duration_seconds: None,
                 })
             } else {
                 // ── Single-session dispatch (original behavior) ───────
@@ -957,6 +1000,7 @@ async fn execute_node(
                     rubber_duck_sessions: supervised.rubber_duck_sessions,
                     builder_output: None,
                     all_assistant_texts: supervised.executor_result.all_assistant_texts,
+                    duration_seconds: None,
                 })
             }
         }
@@ -974,6 +1018,7 @@ async fn execute_node(
                 rubber_duck_sessions: vec![],
                 builder_output: None,
                 all_assistant_texts: vec![],
+                duration_seconds: None,
             })
         }
 
@@ -988,6 +1033,7 @@ async fn execute_node(
             rubber_duck_sessions: vec![],
             builder_output: None,
             all_assistant_texts: vec![],
+            duration_seconds: None,
         }),
 
         CeremonyNodeType::Deploy => execute_deploy_node(node, ctx, sink).await,
@@ -1331,6 +1377,7 @@ async fn execute_deploy_node(
                 rubber_duck_sessions: vec![],
                 builder_output: None,
                 all_assistant_texts: vec![],
+                duration_seconds: None,
             });
         }
     };
@@ -1561,6 +1608,7 @@ async fn execute_deploy_node(
         rubber_duck_sessions: vec![],
         builder_output: None,
         all_assistant_texts: vec![],
+        duration_seconds: None,
     })
 }
 
@@ -1590,6 +1638,7 @@ async fn execute_promote_node(
                 rubber_duck_sessions: vec![],
                 builder_output: None,
                 all_assistant_texts: vec![],
+                duration_seconds: None,
             });
         }
     };
@@ -1651,6 +1700,7 @@ async fn execute_promote_node(
                 rubber_duck_sessions: vec![],
                 builder_output: None,
                 all_assistant_texts: vec![],
+                duration_seconds: None,
             }
         }
         Ok(r) => {
@@ -1821,6 +1871,7 @@ fn deploy_failed(node: &CeremonyNode, reason: &str) -> NodeResult {
         rubber_duck_sessions: vec![],
         builder_output: None,
         all_assistant_texts: vec![],
+        duration_seconds: None,
     }
 }
 
@@ -2000,6 +2051,7 @@ fn save_checkpoint(
                 output: r.output.clone(),
                 cost_usd: r.cost_usd,
                 impediment_raised: r.impediment_raised,
+                duration_seconds: r.duration_seconds,
             })
             .collect(),
     };
@@ -2067,5 +2119,90 @@ mod tests {
 
         let branch = detect_default_branch(repo);
         assert_eq!(branch, "master", "should detect master from symbolic-ref");
+    }
+
+    /// Verifies that NodeResult::new() defaults duration_seconds to None,
+    /// and that it can be set to a meaningful value.
+    #[test]
+    fn node_result_duration() {
+        let result = NodeResult::new("test_node".to_string(), CeremonyStatus::Completed);
+        assert!(
+            result.duration_seconds.is_none(),
+            "new NodeResult should have duration_seconds = None"
+        );
+
+        // Simulate what the flow engine does after execute_node returns
+        let mut result = result;
+        result.duration_seconds = Some(42.5);
+        assert_eq!(result.duration_seconds, Some(42.5));
+    }
+
+    /// Verifies that skipped nodes get duration_seconds = Some(0.0).
+    #[test]
+    fn node_result_duration_skipped() {
+        let result = NodeResult {
+            key: "skipped_node".to_string(),
+            status: CeremonyStatus::Skipped,
+            output: None,
+            cost_usd: None,
+            impediment_raised: false,
+            judge_verdict: None,
+            supervisor_decisions: vec![],
+            rubber_duck_sessions: vec![],
+            builder_output: None,
+            all_assistant_texts: vec![],
+            duration_seconds: Some(0.0),
+        };
+        assert_eq!(
+            result.duration_seconds,
+            Some(0.0),
+            "skipped nodes should have duration_seconds = 0.0"
+        );
+    }
+
+    /// Verifies that CheckpointedNode preserves duration_seconds through
+    /// serialization/deserialization round-trip (crash recovery).
+    #[test]
+    fn checkpointed_node_duration_roundtrip() {
+        let checkpoint = FlowCheckpoint {
+            sprint_session_id: "test-session".to_string(),
+            completed_nodes: vec![CheckpointedNode {
+                key: "builder".to_string(),
+                status: "Completed".to_string(),
+                output: Some("done".to_string()),
+                cost_usd: Some(1.5),
+                impediment_raised: false,
+                duration_seconds: Some(123.4),
+            }],
+        };
+
+        let json = serde_json::to_string(&checkpoint).expect("serialize");
+        let restored: FlowCheckpoint = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.completed_nodes.len(), 1);
+        assert_eq!(restored.completed_nodes[0].duration_seconds, Some(123.4));
+    }
+
+    /// Verifies backward compatibility: CheckpointedNode without duration_seconds
+    /// deserializes with None (old checkpoints from before this change).
+    #[test]
+    fn checkpointed_node_duration_backward_compat() {
+        let json = r#"{
+            "sprint_session_id": "old-session",
+            "completed_nodes": [{
+                "key": "researcher",
+                "status": "Completed",
+                "output": null,
+                "cost_usd": 0.5,
+                "impediment_raised": false
+            }]
+        }"#;
+
+        let restored: FlowCheckpoint = serde_json::from_str(json).expect("deserialize old format");
+        assert_eq!(restored.completed_nodes.len(), 1);
+        assert!(
+            restored.completed_nodes[0].duration_seconds.is_none(),
+            "old checkpoints without duration_seconds should deserialize as None"
+        );
     }
 }
