@@ -84,8 +84,9 @@ pub enum BacklogAction {
     Show { id: String },
     /// Transition story status
     Transition {
+        /// Story code or ID (e.g. "ER-042")
         id: String,
-        #[arg(long)]
+        /// Target status (e.g. "parked", "ready", "blocked")
         status: String,
     },
     /// Delete a story
