@@ -40,6 +40,10 @@ pub struct ExecutorConfig {
     /// Additional environment variables to set on the subprocess
     #[allow(clippy::type_complexity)]
     pub extra_env: Vec<(String, String)>,
+    /// Template variables for agent file substitution (e.g. {{research_notes}}).
+    /// When non-empty, the executor uses `resolve_agent_path_with_vars` to replace
+    /// placeholders in the agent `.md` file before writing to disk.
+    pub template_vars: HashMap<String, String>,
 }
 
 pub struct ExecutorResult {
@@ -91,9 +95,16 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     }
 
     if let Some(agent) = &config.agent {
-        // Resolve agent name to absolute path (checks repo override, then embedded)
+        // Resolve agent name to absolute path (checks repo override, then embedded).
+        // When template_vars are provided (e.g. research_notes for groomer),
+        // use the vars-aware resolver to substitute {{key}} placeholders.
         let repo = std::path::Path::new(&config.repo_path);
-        if let Some(agent_path) = agents::resolve_agent_path(agent, repo) {
+        let resolved = if config.template_vars.is_empty() {
+            agents::resolve_agent_path(agent, repo)
+        } else {
+            agents::resolve_agent_path_with_vars(agent, repo, &config.template_vars)
+        };
+        if let Some(agent_path) = resolved {
             cmd.arg("--agent").arg(agent_path);
         } else {
             // Fall back to bare name (let Claude Code resolve it)

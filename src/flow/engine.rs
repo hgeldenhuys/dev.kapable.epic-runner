@@ -91,6 +91,9 @@ pub struct FlowContext {
     /// When executing per-story, holds the current story being processed.
     /// Resolved as {{story}} in template interpolation.
     pub current_story: Option<serde_json::Value>,
+    /// Combined markdown content of all research notes linked to sprint stories.
+    /// Injected into the groomer agent via {{research_notes}} template variable.
+    pub research_notes_content: String,
 }
 
 /// Result of executing one node.
@@ -2051,6 +2054,17 @@ fn build_executor_config(
         node_label: Some(node.label.clone()),
         max_turns: c.max_turns,
         extra_env: vec![],
+        template_vars: {
+            let mut vars = HashMap::new();
+            // Inject research notes into groom agent's {{research_notes}} placeholder
+            if node.key == "groom" && !ctx.research_notes_content.is_empty() {
+                vars.insert(
+                    "research_notes".to_string(),
+                    ctx.research_notes_content.clone(),
+                );
+            }
+            vars
+        },
     }
 }
 
@@ -2387,6 +2401,7 @@ mod tests {
             product_brief: String::new(),
             product_definition_of_done: String::new(),
             current_story: None,
+            research_notes_content: String::new(),
         }
     }
 

@@ -63,6 +63,7 @@ pub async fn run(
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        template_vars: std::collections::HashMap::new(),
     };
 
     eprintln!("Running retrospective for sprint {}...", args.sprint_id);

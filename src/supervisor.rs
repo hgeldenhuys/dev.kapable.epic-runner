@@ -253,6 +253,7 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        template_vars: std::collections::HashMap::new(),
     };
 
     match executor::execute(duck_config, &|_| {}).await {

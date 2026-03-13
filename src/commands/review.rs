@@ -66,6 +66,7 @@ pub async fn run(
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        template_vars: std::collections::HashMap::new(),
     };
 
     eprintln!("Running business review for epic {}...", args.epic_code);

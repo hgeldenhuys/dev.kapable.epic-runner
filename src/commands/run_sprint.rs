@@ -208,6 +208,38 @@ pub async fn run(
 
     // 7. Build flow context
     let stories = sprint.stories.clone().unwrap_or(json!([]));
+
+    // Pre-fetch research notes linked to sprint stories for groomer injection.
+    // Each story may link to research documents via the story_research_links table.
+    let research_notes_content = {
+        let story_ids: Vec<&str> = stories
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|s| s["id"].as_str()).collect())
+            .unwrap_or_default();
+        let mut sections = Vec::new();
+        for story_id in &story_ids {
+            match super::research::fetch_research_for_story(client, story_id).await {
+                Ok(notes) if !notes.is_empty() => {
+                    for note in &notes {
+                        sections.push(format!("### {}\n\n{}\n", note.title, note.content));
+                    }
+                }
+                Ok(_) => {} // No research for this story
+                Err(e) => {
+                    tracing::warn!(story_id, error = %e, "Failed to fetch research notes — continuing without");
+                }
+            }
+        }
+        // Deduplicate (same note linked to multiple stories)
+        sections.sort();
+        sections.dedup();
+        if sections.is_empty() {
+            String::new()
+        } else {
+            format!("## Linked Research\n\n{}", sections.join("\n---\n\n"))
+        }
+    };
+
     // Build product brief and DoD strings for agent context injection
     let product_brief = product.brief.clone().unwrap_or_default();
     let product_dod = product
@@ -236,6 +268,7 @@ pub async fn run(
         product_brief,
         product_definition_of_done: product_dod,
         current_story: None,
+        research_notes_content,
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
