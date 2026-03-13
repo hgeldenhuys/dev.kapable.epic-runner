@@ -64,29 +64,29 @@ pub async fn run(
     }
 
     // Lock file with dead PID detection
-    let lock_path = format!(".epic-runner/{}.lock", args.epic_code);
-    if std::path::Path::new(&lock_path).exists() {
-        let pid_str = std::fs::read_to_string(&lock_path).unwrap_or_default();
-        let pid = pid_str.trim().parse::<u32>().unwrap_or(0);
-
-        if pid > 0 && is_process_alive(pid) {
-            return Err(format!("Epic {} already running (PID {})", args.epic_code, pid).into());
-        } else {
-            // Stale lock — process is dead. Clean up and proceed.
+    let lock_dir = std::path::Path::new(".epic-runner");
+    let lock_outcome = crate::lock::acquire_epic_lock(lock_dir, &args.epic_code)?;
+    let lock_path = match lock_outcome {
+        crate::lock::LockOutcome::Acquired(path) => path,
+        crate::lock::LockOutcome::AlreadyRunning { epic_code, pid } => {
+            return Err(format!("Epic {} already running (PID {})", epic_code, pid).into());
+        }
+        crate::lock::LockOutcome::StaleRecovered {
+            lock_path,
+            dead_pid,
+        } => {
             eprintln!(
                 "{} Removing stale lock for {} (PID {} is dead)",
                 "[cleanup]".dimmed(),
                 args.epic_code,
-                pid,
+                dead_pid,
             );
-            std::fs::remove_file(&lock_path).ok();
+            lock_path
         }
-    }
-    std::fs::create_dir_all(".epic-runner").ok();
-    std::fs::write(&lock_path, std::process::id().to_string())?;
+    };
     let lock_path_clone = lock_path.clone();
     let _guard = scopeguard::guard((), move |_| {
-        std::fs::remove_file(&lock_path_clone).ok();
+        crate::lock::release_lock(&lock_path_clone);
     });
 
     // Snapshot the binary to a temp location so rebuilds during orchestration
@@ -1214,28 +1214,6 @@ async fn send_heartbeat(client: &ApiClient, sprint_id: &str) {
     {
         tracing::debug!(error = %e, "Heartbeat PATCH failed (non-fatal)");
     }
-}
-
-/// Check if a process with the given PID is still alive.
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) is a standard POSIX call that checks process existence
-    // without sending any signal. Returns 0 if process exists, -1 with ESRCH if not.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-/// Check if a process with the given PID is still alive (Windows).
-#[cfg(windows)]
-fn is_process_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output()
-        .map(|o| {
-            let out = String::from_utf8_lossy(&o.stdout);
-            // tasklist prints "INFO: No tasks are running..." when PID not found
-            !out.contains("No tasks") && out.contains(&pid.to_string())
-        })
-        .unwrap_or(false)
 }
 
 /// Kill a process tree. On Unix, sends SIGTERM to the process group, waits 2 seconds,

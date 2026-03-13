@@ -10,6 +10,7 @@ pub mod flow;
 pub mod impediments;
 pub mod json_extract;
 pub mod judge;
+pub mod lock;
 pub mod repo_resolver;
 pub mod scrum_master;
 pub mod stream;
