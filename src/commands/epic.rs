@@ -85,15 +85,30 @@ pub async fn run(
             let instance = domain_count as i32 + 1;
             let code = format!("{}-{:03}", domain_upper, instance);
 
-            // Verify code doesn't already exist (defense-in-depth)
-            let code_exists = all_epics_global
+            // Primary check: epic code must not already exist in THIS product
+            let product_duplicate = all_epics_global.data.iter().any(|e| {
+                e["code"].as_str() == Some(code.as_str())
+                    && e["product_id"].as_str() == Some(product_id)
+            });
+            if product_duplicate {
+                return Err(format!(
+                    "Epic code '{code}' already exists in product '{product}'. \
+                     Cannot create a duplicate epic code within the same product."
+                )
+                .into());
+            }
+
+            // Secondary check: epic codes must be globally unique across all products
+            let global_duplicate = all_epics_global
                 .data
                 .iter()
                 .any(|e| e["code"].as_str() == Some(code.as_str()));
-            if code_exists {
+            if global_duplicate {
                 return Err(format!(
-                    "Epic code {code} already exists globally. Epic codes must be unique across all products."
-                ).into());
+                    "Epic code '{code}' already exists in another product. \
+                     Epic codes must be unique across all products."
+                )
+                .into());
             }
             let worktree_name = code.clone();
 
