@@ -559,6 +559,40 @@ pub async fn run(
 
                     // Normal completion — more work needed for epic mission.
                     consecutive_failures = 0;
+
+                    // Check if this was a provisional verdict (code OK, deploy/browser pending).
+                    // If so, do NOT create a full implementation sprint — close the epic instead.
+                    let is_provisional = match client
+                        .get::<serde_json::Value>(&format!("/v1/er_sprints/{}", sprint_id_owned))
+                        .await
+                    {
+                        Ok(sprint_data) => sprint_data
+                            .get("handoff_summary")
+                            .and_then(|hs| hs.get("verdict"))
+                            .and_then(|v| v.get("provisional"))
+                            .and_then(|p| p.as_bool())
+                            .unwrap_or(false),
+                        Err(_) => false,
+                    };
+
+                    if is_provisional {
+                        eprintln!(
+                            "{} — code quality passed but deploy/browser verification pending. Closing epic as done_pending_deploy.",
+                            "Provisional verdict".yellow().bold()
+                        );
+                        if let Err(e) = client
+                            .patch::<_, serde_json::Value>(
+                                &format!("/v1/epics/{}", epic.id),
+                                &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
+                            )
+                            .await
+                        {
+                            tracing::error!(error = %e, "Failed to close epic as done_pending_deploy");
+                        }
+                        should_break = true;
+                        break; // break retry loop — no new sprint needed
+                    }
+
                     // The judge has already transitioned stories in run_sprint.rs:
                     //   - stories_completed → "done"
                     //   - stories_to_regroom → ACs/tasks cleared for re-planning

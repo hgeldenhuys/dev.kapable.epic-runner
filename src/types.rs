@@ -437,6 +437,12 @@ pub struct JudgeVerdict {
     /// so the next sprint has specific guidance rather than a blind retry.
     #[serde(default)]
     pub story_updates: Option<Vec<JudgeStoryUpdate>>,
+    /// v7: Provisional pass — code quality is acceptable but browser/deploy ACs
+    /// cannot be verified because the app was not deployed. The orchestrator
+    /// should NOT create a full implementation sprint — instead close with
+    /// done_pending_deploy or create a deploy-only verification sprint.
+    #[serde(default)]
+    pub provisional: Option<bool>,
 }
 
 /// Judge's update for an incomplete story — adds tasks, flags blockers, explains why.

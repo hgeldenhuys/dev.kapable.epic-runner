@@ -357,19 +357,22 @@ pub async fn run(
     let judge_verdict = results.iter().find_map(|r| r.judge_verdict.clone());
     let any_impediment = results.iter().any(|r| r.impediment_raised);
 
-    // Intent evaluation: if a judge ran, use its verdict.
+    // Intent evaluation: if a judge ran, use its verdict (three-state: satisfied, provisional, not satisfied).
     // If no judge ran (e.g. minimal flow), consider it satisfied if
     // all non-skipped nodes completed successfully.
-    let intent_satisfied = if judge_verdict.is_some() {
+    let verdict_result = if judge_verdict.is_some() {
         crate::judge::evaluate_verdict(&judge_verdict)
+    } else if results.iter().all(|r| {
+        matches!(
+            r.status,
+            crate::types::CeremonyStatus::Completed | crate::types::CeremonyStatus::Skipped
+        )
+    }) {
+        crate::judge::VerdictResult::Satisfied
     } else {
-        results.iter().all(|r| {
-            matches!(
-                r.status,
-                crate::types::CeremonyStatus::Completed | crate::types::CeremonyStatus::Skipped
-            )
-        })
+        crate::judge::VerdictResult::NotSatisfied
     };
+    let intent_satisfied = verdict_result == crate::judge::VerdictResult::Satisfied;
 
     // Sprints never "fail" — they complete with whatever work got done.
     // The judge evaluates mission progress; if more work is needed, the
@@ -394,14 +397,16 @@ pub async fn run(
             "Sprint {} {}: {}",
             sprint.number,
             final_status,
-            if intent_satisfied {
-                "mission satisfied"
-            } else {
-                "more work needed"
+            match verdict_result {
+                crate::judge::VerdictResult::Satisfied => "mission satisfied",
+                crate::judge::VerdictResult::Provisional =>
+                    "provisional pass — deploy/browser verification pending",
+                crate::judge::VerdictResult::NotSatisfied => "more work needed",
             }
         ),
         detail: Some(json!({
             "intent_satisfied": intent_satisfied,
+            "provisional": verdict_result == crate::judge::VerdictResult::Provisional,
             "impediment": any_impediment,
             "total_cost_usd": results.iter().filter_map(|r| r.cost_usd).sum::<f64>(),
         })),
@@ -983,6 +988,7 @@ fn build_handoff_summary(
     let verdict_summary = if let Some(ref verdict) = judge_verdict {
         json!({
             "intent_satisfied": verdict.intent_satisfied,
+            "provisional": verdict.provisional.unwrap_or(false),
             "mission_progress": verdict.mission_progress,
             "summary": verdict.summary,
             "stories_completed": verdict.stories_completed,
@@ -990,6 +996,7 @@ fn build_handoff_summary(
     } else {
         json!({
             "intent_satisfied": intent_satisfied,
+            "provisional": false,
             "summary": "no judge ran",
         })
     };

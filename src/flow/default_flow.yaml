@@ -108,6 +108,16 @@ nodes:
         If a story needs re-planning (wrong approach, missed requirements):
         - Add it to stories_to_regroom so the next sprint can re-plan it
 
+        PROVISIONAL VERDICT — when deploy was skipped or unavailable:
+        If the code changes look correct and complete but you CANNOT verify browser/UI
+        acceptance criteria because the app was not deployed (e.g., deploy_app_id not
+        configured, deploy node skipped, or no production URL available), then:
+        - Set intent_satisfied: false (you haven't fully verified)
+        - Set provisional: true (signals the orchestrator that code is done but
+          deploy/browser verification is pending — do NOT create another implementation sprint)
+        Only use provisional when the code quality genuinely passes review. If there are
+        real code issues, set provisional: false (or omit it) and describe what needs fixing.
+
         Output structured JSON with ALL fields:
         1. mission_progress (0-100%): How much of the epic intent is now satisfied?
         2. stories_completed: List of story CODES whose ACs are all verified
@@ -115,7 +125,8 @@ nodes:
         4. delta_stories: NEW stories discovered during this sprint (smoke tests, integration tests, etc.)
         5. deploy_ready (bool): Is the code ready to deploy?
         6. intent_satisfied (bool): Is the full epic mission complete?
-        7. next_sprint_goal (string): Refined goal for the NEXT sprint based on what was accomplished and what remains
+        7. provisional (bool): Set true ONLY when code is correct but browser/deploy ACs cannot be verified due to missing deploy
+        8. next_sprint_goal (string): Refined goal for the NEXT sprint based on what was accomplished and what remains
 
   - key: gate_deploy
     node_type: gate
