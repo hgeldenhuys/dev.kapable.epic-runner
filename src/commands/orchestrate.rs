@@ -122,6 +122,26 @@ pub async fn run(
         std::fs::remove_file(&exe_snapshot_clone).ok();
     });
 
+    // Register daemon status for health monitoring
+    let daemon_record_id = match client
+        .daemon_register(&args.epic_code, std::process::id())
+        .await
+    {
+        Ok(id) => {
+            eprintln!(
+                "{} Daemon registered ({})",
+                "[preflight]".dimmed(),
+                &id[..8],
+            );
+            Some(id)
+        }
+        Err(e) => {
+            // Non-fatal — daemon can run without health monitoring
+            tracing::warn!(error = %e, "Failed to register daemon status (table may not exist — run epic-runner init)");
+            None
+        }
+    };
+
     // 1. Look up epic (try server-side filter, fall back to client-side)
     let epics_resp: DataWrapper<Vec<serde_json::Value>> = client
         .get_with_params("/v1/epics", &[("code", args.epic_code.as_str())])
@@ -147,12 +167,18 @@ pub async fn run(
     let epic: Epic = serde_json::from_value(epic_data)?;
 
     if epic.status != EpicStatus::Active {
+        if let Some(ref daemon_id) = daemon_record_id {
+            client.daemon_stopped(daemon_id).await;
+        }
         return Err(format!("Epic {} is {}, not active", epic.code, epic.status).into());
     }
 
     // 2. Check impediments
     let blocking = crate::impediments::check_blocking_impediments(client, &epic.code).await?;
     if !blocking.is_empty() {
+        if let Some(ref daemon_id) = daemon_record_id {
+            client.daemon_stopped(daemon_id).await;
+        }
         return Err(format!(
             "Epic {} has {} open impediment(s)",
             epic.code,
@@ -179,6 +205,9 @@ pub async fn run(
             "[DRY RUN] Would execute with up to {} sprints",
             args.max_sprints
         );
+        if let Some(ref daemon_id) = daemon_record_id {
+            client.daemon_stopped(daemon_id).await;
+        }
         return Ok(());
     }
 
@@ -320,7 +349,9 @@ pub async fn run(
             }
         }
         if !ungroomed.is_empty() {
-            eprintln!("\n\x1b[1;33m⚠ DoR WARNING: Ungroomed stories (builder will self-groom)\x1b[0m");
+            eprintln!(
+                "\n\x1b[1;33m⚠ DoR WARNING: Ungroomed stories (builder will self-groom)\x1b[0m"
+            );
             for code in &ungroomed {
                 eprintln!("  • {code} — missing ACs or tasks, builder will generate inline");
             }
@@ -406,25 +437,37 @@ pub async fn run(
             // Wait with timeout + outward heartbeat — prevents runaway processes from burning
             // unlimited credits AND keeps the sprint's heartbeat_at field fresh in the DB so
             // external observers (console UI) can detect zombie sprints.
-            let exit_code =
-                match wait_with_heartbeat(&mut child, timeout_duration, client, &sprint_id_owned)
-                    .await
-                {
-                    Ok(status) => status.code().unwrap_or(-1),
-                    Err(_) => {
-                        eprintln!(
-                            "{} Sprint timed out after {} minutes — killing PID {}",
-                            "[timeout]".red().bold(),
-                            timeout_mins,
-                            child_pid,
-                        );
-                        // Kill the child process tree (cross-platform)
-                        kill_process_tree(child_pid);
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        -1 // Treated as unexpected exit → sprint cancelled
-                    }
-                };
+            // Update daemon status to executing
+            if let Some(ref daemon_id) = daemon_record_id {
+                client
+                    .daemon_heartbeat(daemon_id, "executing", Some(sprint_num))
+                    .await;
+            }
+
+            let exit_code = match wait_with_heartbeat(
+                &mut child,
+                timeout_duration,
+                client,
+                &sprint_id_owned,
+                daemon_record_id.as_deref(),
+            )
+            .await
+            {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => {
+                    eprintln!(
+                        "{} Sprint timed out after {} minutes — killing PID {}",
+                        "[timeout]".red().bold(),
+                        timeout_mins,
+                        child_pid,
+                    );
+                    // Kill the child process tree (cross-platform)
+                    kill_process_tree(child_pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    -1 // Treated as unexpected exit → sprint cancelled
+                }
+            };
 
             tracing::info!(exit_code, "Sprint-run process exited");
 
@@ -629,6 +672,16 @@ pub async fn run(
         if should_break {
             break; // break sprint loop
         }
+
+        // Between sprints, mark daemon as idle
+        if let Some(ref daemon_id) = daemon_record_id {
+            client.daemon_heartbeat(daemon_id, "idle", None).await;
+        }
+    }
+
+    // Mark daemon as stopped on normal exit
+    if let Some(ref daemon_id) = daemon_record_id {
+        client.daemon_stopped(daemon_id).await;
     }
 
     eprintln!("\nEpic runner finished for {}", epic.code);
@@ -1207,11 +1260,14 @@ async fn wait_with_heartbeat(
     timeout: std::time::Duration,
     client: &ApiClient,
     sprint_id: &str,
+    daemon_record_id: Option<&str>,
 ) -> Result<std::process::ExitStatus, ()> {
     let deadline = std::time::Instant::now() + timeout;
     let poll_interval = std::time::Duration::from_millis(2000);
     let heartbeat_interval = std::time::Duration::from_secs(30);
+    let daemon_heartbeat_interval = std::time::Duration::from_secs(60);
     let mut last_heartbeat = std::time::Instant::now();
+    let mut last_daemon_heartbeat = std::time::Instant::now();
 
     // Send initial heartbeat
     send_heartbeat(client, sprint_id).await;
@@ -1223,10 +1279,17 @@ async fn wait_with_heartbeat(
                 if std::time::Instant::now() >= deadline {
                     return Err(());
                 }
-                // Heartbeat every ~30 seconds
+                // Sprint heartbeat every ~30 seconds
                 if last_heartbeat.elapsed() >= heartbeat_interval {
                     send_heartbeat(client, sprint_id).await;
                     last_heartbeat = std::time::Instant::now();
+                }
+                // Daemon heartbeat every ~60 seconds
+                if let Some(daemon_id) = daemon_record_id {
+                    if last_daemon_heartbeat.elapsed() >= daemon_heartbeat_interval {
+                        client.daemon_heartbeat(daemon_id, "executing", None).await;
+                        last_daemon_heartbeat = std::time::Instant::now();
+                    }
                 }
                 tokio::time::sleep(poll_interval).await;
             }

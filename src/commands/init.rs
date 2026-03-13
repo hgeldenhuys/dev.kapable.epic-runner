@@ -40,6 +40,8 @@ const TABLES: &[&str] = &[
     "sprint_assignments",
     // v3: agent orientation
     "research_artifacts",
+    // v4: daemon health monitoring
+    "daemon_status",
 ];
 
 pub async fn run(

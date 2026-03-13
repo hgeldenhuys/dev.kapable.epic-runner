@@ -293,6 +293,70 @@ impl ApiClient {
         }
     }
 
+    // ── Daemon status helpers ────────────────────────────────────────────
+
+    /// Register this daemon in the daemon_status table. Returns the record ID.
+    /// Called once at orchestrate startup.
+    pub async fn daemon_register(&self, epic_code: &str, pid: u32) -> Result<String, ApiError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let body = serde_json::json!({
+            "epic_code": epic_code,
+            "pid": pid,
+            "status": "idle",
+            "sprint_number": null,
+            "started_at": now,
+            "last_heartbeat_at": now,
+        });
+        let resp: serde_json::Value = self.post("/v1/daemon_status", &body).await?;
+        // The API wraps the created record — extract the id
+        let id = resp["id"]
+            .as_str()
+            .ok_or_else(|| ApiError::Server("daemon_status POST returned no id".into()))?;
+        Ok(id.to_string())
+    }
+
+    /// Send a daemon heartbeat — PATCH last_heartbeat_at and optionally update
+    /// status/sprint_number. Best-effort: logs on failure but never panics.
+    pub async fn daemon_heartbeat(
+        &self,
+        record_id: &str,
+        status: &str,
+        sprint_number: Option<i32>,
+    ) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut body = serde_json::json!({
+            "status": status,
+            "last_heartbeat_at": now,
+        });
+        if let Some(num) = sprint_number {
+            body["sprint_number"] = serde_json::json!(num);
+        }
+        if let Err(e) = self
+            .patch::<_, serde_json::Value>(&format!("/v1/daemon_status/{record_id}"), &body)
+            .await
+        {
+            tracing::debug!(error = %e, "Daemon heartbeat PATCH failed (non-fatal)");
+        }
+    }
+
+    /// Mark daemon as stopped. Called on all orchestrate exit paths.
+    pub async fn daemon_stopped(&self, record_id: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        if let Err(e) = self
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/daemon_status/{record_id}"),
+                &serde_json::json!({
+                    "status": "stopped",
+                    "last_heartbeat_at": now,
+                    "finished_at": now,
+                }),
+            )
+            .await
+        {
+            tracing::debug!(error = %e, "Daemon stopped PATCH failed (non-fatal)");
+        }
+    }
+
     // ── Internal helpers ───────────────────────────────────────────────
 
     /// Send a request built by `build_fn`, retrying on transient failures.
