@@ -52,6 +52,10 @@ pub struct OrchestrateArgs {
     /// Maximum retries for transient sprint failures (network timeout, rate limit)
     #[arg(long, default_value = "2")]
     pub max_retries: u32,
+
+    /// Directory for log files (daemon mode — stdout/stderr redirected to disk)
+    #[arg(long, default_value = ".epic-runner/logs")]
+    pub log_dir: String,
 }
 
 pub async fn run(
@@ -59,7 +63,13 @@ pub async fn run(
     client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 0. PRE-FLIGHT
+    // 0. LOG REDIRECT (daemon mode — all output goes to disk)
+    #[cfg(unix)]
+    let log_file_path = setup_log_redirect(&args.log_dir, &args.epic_code)?;
+    #[cfg(unix)]
+    eprintln!("[log] Output redirected to {}", log_file_path.display());
+
+    // 1. PRE-FLIGHT
     let claude_check = std::process::Command::new("claude")
         .arg("--version")
         .output();
@@ -1338,6 +1348,76 @@ fn kill_process_tree(pid: u32) {
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .output();
+}
+
+/// Rotate log files for an epic, keeping at most `max_keep - 1` files
+/// (the caller is about to create one more, so total stays at `max_keep`).
+fn rotate_logs(
+    log_dir: &std::path::Path,
+    epic_code: &str,
+    max_keep: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prefix = format!("{}-", epic_code);
+    let mut logs: Vec<std::path::PathBuf> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(log_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(&prefix) && name_str.ends_with(".log") {
+                logs.push(entry.path());
+            }
+        }
+    }
+
+    // Timestamp in filename ensures alphabetical sort == chronological
+    logs.sort();
+
+    // Delete oldest until we have room for the new file
+    while logs.len() >= max_keep {
+        if let Some(oldest) = logs.first() {
+            std::fs::remove_file(oldest)?;
+        }
+        logs.remove(0);
+    }
+
+    Ok(())
+}
+
+/// Set up log file for daemon mode: create directory, rotate old logs, open new
+/// log file, and redirect stdout + stderr to it via dup2.
+///
+/// After this call, all `eprintln!`, `tracing::*!`, and child process output
+/// goes to `.epic-runner/logs/{EPIC_CODE}-{timestamp}.log`.
+#[cfg(unix)]
+fn setup_log_redirect(
+    log_dir: &str,
+    epic_code: &str,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    use std::os::unix::io::AsRawFd;
+
+    let dir = std::path::Path::new(log_dir);
+    std::fs::create_dir_all(dir)?;
+
+    // Rotate: keep at most 4 existing logs (+ 1 new = 5 total)
+    rotate_logs(dir, epic_code, 5)?;
+
+    // Create new log file with ISO timestamp
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let filename = format!("{}-{}.log", epic_code, timestamp);
+    let file_path = dir.join(&filename);
+    let file = std::fs::File::create(&file_path)?;
+
+    // Redirect stdout (fd 1) and stderr (fd 2) to the log file.
+    // Child processes inherit these fds automatically via Stdio::inherit() (default).
+    let fd = file.as_raw_fd();
+    unsafe {
+        libc::dup2(fd, libc::STDOUT_FILENO);
+        libc::dup2(fd, libc::STDERR_FILENO);
+    }
+    // `file` drops here, closing the original fd — but fds 1 and 2 remain valid.
+
+    Ok(file_path)
 }
 
 // detect_default_branch is now `pub fn` in crate::flow::engine — use that instead.
