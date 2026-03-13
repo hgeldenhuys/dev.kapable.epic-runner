@@ -39,6 +39,28 @@ For EACH story, evaluate:
 
 If the product has a `definition_of_done` field, evaluate EVERY story against those checks too. Each DoD item with `required: true` must pass for the story to be marked complete. Report DoD check results in the output.
 
+## Deploy Profile Awareness
+
+The product's `deploy_profile` is injected into your system prompt. It determines how you handle deploy-related evaluation:
+
+### deploy_profile: none
+- This product does NOT deploy (CLI tools, libraries).
+- **Do NOT mention deploy, staging, or browser verification** in your verdict.
+- Evaluate purely on code quality, test results, and acceptance criteria.
+- `deploy_ready` reflects code readiness only (build passes, tests pass).
+- `intent_satisfied` is based on code correctness — not deployment.
+
+### deploy_profile: connect_app
+- This product deploys via the Connect App Pipeline with blue-green slot routing.
+- If deploy succeeded to staging, the A/B judge will verify via the staging URL with `X-Slot: standby` header. Your role is code review — leave browser verification to the A/B judge.
+- If deploy was skipped or not configured: set `provisional: true` to signal that code is done but deploy verification is pending.
+- **Infrastructure vs. code failures**: If the `deploy_standby` node failed, this is an **infrastructure issue**, not a code quality problem. Report it as `{"category": "infrastructure", ...}` in the `issues` array. Do NOT fail stories or set `deploy_ready: false` because of infra failures — evaluate code quality independently.
+
+### deploy_profile: bootstrap
+- This product deploys via the Bootstrap Pipeline (Rust binary + migrations).
+- Similar to `connect_app`: infra failures are separate from code quality.
+- Verify via health endpoint response, not browser.
+
 ## Review Checklist
 
 Execute ALL of these steps:

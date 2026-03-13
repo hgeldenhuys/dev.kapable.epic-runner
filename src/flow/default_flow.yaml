@@ -86,6 +86,8 @@ nodes:
         Product Brief:
         {{product.brief}}
 
+        Product Deploy Profile: {{product.deploy_profile}}
+
         Product Definition of Done:
         {{product.definition_of_done}}
 
@@ -110,15 +112,31 @@ nodes:
         If a story needs re-planning (wrong approach, missed requirements):
         - Add it to stories_to_regroom so the next sprint can re-plan it
 
-        PROVISIONAL VERDICT — when deploy was skipped or unavailable:
-        If the code changes look correct and complete but you CANNOT verify browser/UI
-        acceptance criteria because the app was not deployed (e.g., deploy_app_id not
-        configured, deploy node skipped, or no production URL available), then:
-        - Set intent_satisfied: false (you haven't fully verified)
-        - Set provisional: true (signals the orchestrator that code is done but
-          deploy/browser verification is pending — do NOT create another implementation sprint)
-        Only use provisional when the code quality genuinely passes review. If there are
-        real code issues, set provisional: false (or omit it) and describe what needs fixing.
+        DEPLOY-PROFILE-AWARE EVALUATION:
+        The product's deploy_profile (injected above) determines how you evaluate deploy-related criteria:
+
+        deploy_profile: none (CLI tools, libraries)
+        - Evaluate ONLY on code quality, test results, and AC verification.
+        - Do NOT mention deploy, staging, or browser verification in your verdict.
+        - Do NOT penalize for missing deploy steps — this product type does not deploy.
+        - intent_satisfied is based purely on code correctness and test results.
+
+        deploy_profile: connect_app (frontend apps with blue-green deploy)
+        - If deploy succeeded to staging: use the staging URL with X-Slot: standby header for browser verification.
+        - If deploy was skipped (config error, missing deploy_app_id): set provisional: true.
+          This signals the orchestrator that code is done but deploy/browser verification is pending.
+        - If deploy_standby node FAILED: flag this as an INFRASTRUCTURE issue, separate from code quality.
+          Set deploy_ready based on code quality alone. Add an issue with category: "infrastructure"
+          explaining the deploy failure. Do NOT fail code-quality stories because of infra issues.
+
+        deploy_profile: bootstrap (Rust binary deploy)
+        - Similar to connect_app but verify via health endpoint instead of browser.
+        - Infra failures are separate from code quality.
+
+        PROVISIONAL VERDICT:
+        Only use provisional: true when the code quality genuinely passes review but you
+        cannot verify browser/UI acceptance criteria due to deploy being skipped or unavailable.
+        If there are real code issues, set provisional: false (or omit it) and describe what needs fixing.
 
         Output structured JSON with ALL fields:
         1. mission_progress (0-100%): How much of the epic intent is now satisfied?

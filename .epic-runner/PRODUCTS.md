@@ -71,3 +71,33 @@ Kapable Org Console — deployed via Connect App Pipeline with blue-green slot r
 | **deploy_app_id** | — |
 
 Deployed via the Bootstrap Pipeline (cross-compiled Rust binary + migrations).
+
+---
+
+## Definition of Done by Deploy Profile
+
+### connect_app DoD (Frontend Apps)
+
+Products with `deploy_profile: connect_app` must satisfy these additional DoD gates:
+
+| Check | Required | Description |
+|-------|----------|-------------|
+| Blue-green health | Yes | Standby container responds 200 on `/health` via `X-Slot: standby` header |
+| Session continuity | Yes | Authenticated session cookies work on standby (same domain, same DB) |
+| A/B judge approval | Yes | A/B judge verifies standby vs live and approves promotion |
+| Promote success | Yes | Standby promoted to primary without downtime |
+
+**Infrastructure gate**: Blue-green health is an infrastructure prerequisite. If the standby container is unhealthy, the deploy chain halts at `gate_deploy_ok`. The code judge flags this as an infrastructure issue — it does NOT affect the code quality verdict.
+
+### bootstrap DoD (Rust Services)
+
+Products with `deploy_profile: bootstrap` must satisfy:
+
+| Check | Required | Description |
+|-------|----------|-------------|
+| Health endpoint | Yes | `/health` returns 200 after deploy |
+| Metrics endpoint | Yes | `/metrics` returns valid Prometheus format |
+
+### none DoD (CLI Tools, Libraries)
+
+Products with `deploy_profile: none` have no deploy-related DoD gates. Evaluation is purely on code quality and test results.
