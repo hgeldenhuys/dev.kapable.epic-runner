@@ -269,7 +269,81 @@ pub async fn run(
         BacklogAction::Show { id } => {
             let full_id = resolve_story_id(client, &id).await?;
             let resp: serde_json::Value = client.get(&format!("/v1/stories/{full_id}")).await?;
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                let s: Story = serde_json::from_value(resp)?;
+                let id_short = s.id.to_string();
+                let code_display = s.code.as_deref().unwrap_or(&id_short[..8]);
+
+                // ── Header ──
+                println!("╭─ {} ─ {}", code_display, s.title);
+                println!(
+                    "│ Status: {}  Epic: {}  Points: {}",
+                    s.status,
+                    s.epic_code.as_deref().unwrap_or("-"),
+                    s.points.map(|p| p.to_string()).unwrap_or_else(|| "-".into())
+                );
+                if let Some(intent) = &s.intent {
+                    println!("│ Intent: {intent}");
+                }
+                if let Some(persona) = &s.persona {
+                    println!("│ Persona: {persona}");
+                }
+                if let Some(desc) = &s.description {
+                    if !desc.is_empty() {
+                        println!("│ Description: {desc}");
+                    }
+                }
+                if let Some(deps) = &s.dependencies {
+                    if !deps.is_empty() {
+                        println!("│ Dependencies: {}", deps.join(", "));
+                    }
+                }
+
+                // ── Tasks ──
+                if let Some(tasks) = &s.tasks {
+                    let done_count = tasks.iter().filter(|t| t.done).count();
+                    println!("│");
+                    println!("│ Tasks ({done_count}/{}):", tasks.len());
+                    for (i, task) in tasks.iter().enumerate() {
+                        let check = if task.done { "✓" } else { "✗" };
+                        let persona_tag = if task.persona.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", task.persona)
+                        };
+                        println!("│   [{i}] {check} {}{persona_tag}", task.description);
+                        if !task.done {
+                            println!(
+                                "│       → epic-runner backlog task-done {code_display} {i}"
+                            );
+                        }
+                    }
+                }
+
+                // ── Acceptance Criteria ──
+                if let Some(acs) = &s.acceptance_criteria {
+                    let verified_count = acs.iter().filter(|a| a.verified).count();
+                    println!("│");
+                    println!("│ Acceptance Criteria ({verified_count}/{}):", acs.len());
+                    for (i, ac) in acs.iter().enumerate() {
+                        let check = if ac.verified { "✓" } else { "✗" };
+                        println!("│   [{i}] {check} {}", ac.display_text());
+                        if let Some(tb) = &ac.testable_by {
+                            println!("│       test: {tb}");
+                        }
+                        if !ac.verified {
+                            println!(
+                                "│       → epic-runner backlog ac-verify {code_display} {i}"
+                            );
+                        }
+                    }
+                }
+
+                println!("╰─");
+            }
         }
         BacklogAction::Transition { id, status } => {
             let full_id = resolve_story_id(client, &id).await?;
