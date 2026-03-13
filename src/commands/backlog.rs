@@ -120,6 +120,14 @@ pub enum BacklogAction {
         #[arg(long)]
         reason: String,
     },
+    /// Park a story — shelve it for later consideration (excluded from orchestration)
+    Park {
+        /// Story code or ID (e.g. "ER-042")
+        story: String,
+        /// Why the story is being parked
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 pub async fn run(
@@ -283,7 +291,9 @@ pub async fn run(
                     "│ Status: {}  Epic: {}  Points: {}",
                     s.status,
                     s.epic_code.as_deref().unwrap_or("-"),
-                    s.points.map(|p| p.to_string()).unwrap_or_else(|| "-".into())
+                    s.points
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "-".into())
                 );
                 if let Some(intent) = &s.intent {
                     println!("│ Intent: {intent}");
@@ -316,9 +326,7 @@ pub async fn run(
                         };
                         println!("│   [{i}] {check} {}{persona_tag}", task.description);
                         if !task.done {
-                            println!(
-                                "│       → epic-runner backlog task-done {code_display} {i}"
-                            );
+                            println!("│       → epic-runner backlog task-done {code_display} {i}");
                         }
                     }
                 }
@@ -335,9 +343,7 @@ pub async fn run(
                             println!("│       test: {tb}");
                         }
                         if !ac.verified {
-                            println!(
-                                "│       → epic-runner backlog ac-verify {code_display} {i}"
-                            );
+                            println!("│       → epic-runner backlog ac-verify {code_display} {i}");
                         }
                     }
                 }
@@ -447,6 +453,24 @@ pub async fn run(
 
             eprintln!("Story {story} blocked: {reason}");
         }
+        BacklogAction::Park { story, reason } => {
+            let full_id = resolve_story_id(client, &story).await?;
+            let mut body = json!({
+                "status": "parked",
+                "updated_at": chrono::Utc::now().to_rfc3339()
+            });
+            if let Some(r) = &reason {
+                body["parked_reason"] = json!(r);
+            }
+            let _: serde_json::Value = client
+                .patch(&format!("/v1/stories/{full_id}"), &body)
+                .await?;
+
+            update_local_story_file(&body);
+
+            let msg = reason.as_deref().unwrap_or("no reason given");
+            eprintln!("Story {story} parked: {msg}");
+        }
     }
 
     Ok(())
@@ -483,7 +507,7 @@ fn update_local_story_file(patch: &serde_json::Value) {
 
 /// Resolve a story identifier — accepts either a story code (e.g. "ER-042")
 /// or a UUID/UUID prefix. Code lookup is tried first, then falls back to UUID resolution.
-async fn resolve_story_id(
+pub async fn resolve_story_id(
     client: &ApiClient,
     id_or_code: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {

@@ -302,6 +302,8 @@ pub async fn run(
             .get_with_params("/v1/stories", &[("epic_code", epic.code.as_str())])
             .await?;
         // Client-side fallback — server may return all stories
+        // Whitelist: only ready/planned/draft are eligible. Blocked and parked are
+        // explicitly excluded — parked stories need deliberate un-parking, not auto-selection.
         let mut eligible_stories: Vec<&serde_json::Value> = all_stories
             .data
             .iter()

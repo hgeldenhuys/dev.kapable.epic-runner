@@ -309,6 +309,7 @@ pub enum StoryStatus {
     Done,
     Deployed,
     Blocked,
+    Parked,
 }
 
 impl std::fmt::Display for StoryStatus {
@@ -321,6 +322,7 @@ impl std::fmt::Display for StoryStatus {
             StoryStatus::Done => "done",
             StoryStatus::Deployed => "deployed",
             StoryStatus::Blocked => "blocked",
+            StoryStatus::Parked => "parked",
         };
         write!(f, "{s}")
     }
@@ -768,6 +770,39 @@ impl std::fmt::Display for AssignmentStatus {
         };
         write!(f, "{s}")
     }
+}
+
+// ── Research Note (v5) ────────────────────────
+//
+// Many-to-many: a research note can be linked to multiple stories,
+// and a story can reference multiple notes. Stored as full-text
+// markdown with metadata for retrieval and groomer injection.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchNote {
+    pub id: Uuid,
+    pub product_id: Uuid,
+    /// Human-readable title for the research note
+    pub title: String,
+    /// Full markdown content of the research document
+    pub content: String,
+    /// Original file path the content was loaded from (if any)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    /// Tags for categorization and retrieval
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Join record linking a research note to a story (many-to-many).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryResearchLink {
+    pub id: Uuid,
+    pub story_id: Uuid,
+    pub research_note_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 // ── Research Artifact (v3) ────────────────────
