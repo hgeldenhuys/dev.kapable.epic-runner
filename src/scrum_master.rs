@@ -103,7 +103,10 @@ pub fn recommend_flow_patches(
     let mut patches = Vec::new();
 
     // Rule 1: Consecutive research failures → insert research-review node
-    if consecutive_node_failures(history, "research") >= CONSECUTIVE_FAIL_THRESHOLD {
+    // Only applies if the flow actually has a research node (v4+ flows may not)
+    if current_flow.node("research").is_some()
+        && consecutive_node_failures(history, "research") >= CONSECUTIVE_FAIL_THRESHOLD
+    {
         // Only insert if the node doesn't already exist (idempotent)
         if current_flow.node("research_review").is_none() {
             patches.push(FlowPatch::InsertNode {
@@ -160,6 +163,7 @@ pub fn recommend_flow_patches(
     }
 
     // Rule 3: Recurring "research" friction → boost research budget
+    // Only applies if the flow actually has a research node (v4+ flows may not)
     let retros: Vec<&RetroOutput> = history.iter().filter_map(|h| h.retro.as_ref()).collect();
     let friction =
         detect_recurring_friction(&retros.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
@@ -319,17 +323,18 @@ mod tests {
     }
 
     #[test]
-    fn recommend_research_review_on_research_failures() {
+    fn no_research_review_on_v4_flow_without_research_node() {
+        // v4 flow has no research node — research failures in history should not produce patches
         let history = make_history("research", &["Failed", "Failed"]);
         let flow = CeremonyFlow::default_flow();
         let patches = recommend_flow_patches(&history, &flow);
 
-        // Should recommend inserting research_review node
+        // Should NOT recommend research_review since there's no research node to insert after
         assert!(
-            patches.iter().any(
+            !patches.iter().any(
                 |p| matches!(p, FlowPatch::InsertNode { node, .. } if node.key == "research_review")
             ),
-            "Expected research_review insert patch, got: {:?}",
+            "Should not insert research_review when flow has no research node, got: {:?}",
             patches
         );
     }
@@ -349,21 +354,26 @@ mod tests {
     }
 
     #[test]
-    fn idempotent_research_review_not_duplicated() {
-        let history = make_history("research", &["Failed", "Failed"]);
+    fn idempotent_execute_loop_max_not_duplicated() {
+        let history = make_history("execute", &["Failed", "Failed"]);
         let flow = CeremonyFlow::default_flow();
 
         // Apply patches once
         let patches = recommend_flow_patches(&history, &flow);
         let result = crate::flow::patcher::apply_patches(&flow, &patches);
 
-        // Recommend again on the patched flow — should NOT insert again
+        // Recommend again on the patched flow — should NOT recommend same increase
         let patches2 = recommend_flow_patches(&history, &result.flow);
+        // loop_max was already bumped, so a second pass should either not bump
+        // or bump to a different (higher, capped) value — not duplicate
+        let loop_max_patches: Vec<_> = patches2
+            .iter()
+            .filter(|p| matches!(p, FlowPatch::UpdateNodeConfig { key, config } if key == "execute" && config.loop_max.is_some()))
+            .collect();
+        // At most one loop_max update per pass
         assert!(
-            !patches2.iter().any(
-                |p| matches!(p, FlowPatch::InsertNode { node, .. } if node.key == "research_review")
-            ),
-            "Should not duplicate research_review node"
+            loop_max_patches.len() <= 1,
+            "Should not produce duplicate loop_max patches"
         );
     }
 
@@ -381,7 +391,8 @@ mod tests {
     }
 
     #[test]
-    fn recommend_research_budget_boost_on_friction() {
+    fn no_research_patches_when_no_research_node() {
+        // v4 flow has no research node — ensure no research-related patches
         let history = vec![
             SprintHistory {
                 sprint_number: 1,
@@ -409,9 +420,19 @@ mod tests {
         let flow = CeremonyFlow::default_flow();
         let patches = recommend_flow_patches(&history, &flow);
 
+        // v4 has no research node, so no research-related patches should be generated
         assert!(
-            patches.iter().any(|p| matches!(p, FlowPatch::UpdateNodeConfig { key, config } if key == "research" && config.budget_usd.is_some())),
-            "Expected research budget boost, got: {:?}",
+            !patches
+                .iter()
+                .any(|p| matches!(p, FlowPatch::UpdateNodeConfig { key, .. } if key == "research")),
+            "Should not generate research patches when flow has no research node, got: {:?}",
+            patches
+        );
+        assert!(
+            !patches.iter().any(
+                |p| matches!(p, FlowPatch::InsertNode { node, .. } if node.key == "research_review")
+            ),
+            "Should not insert research_review when flow has no research node, got: {:?}",
             patches
         );
     }

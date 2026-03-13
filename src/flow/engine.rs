@@ -541,7 +541,7 @@ async fn execute_node(
                         supervisor_decisions: vec![],
                         rubber_duck_sessions: vec![],
                         builder_output: None,
-                    all_assistant_texts: vec![],
+                        all_assistant_texts: vec![],
                     });
                 }
             }
@@ -644,16 +644,17 @@ async fn execute_node(
                 // sprint goal inheritance, and intent satisfaction.
                 // Try result_text first, then fall back to searching all assistant texts.
                 let verdict = if node.key == "judge_code" || node.key == "judge" {
-                    crate::judge::parse_verdict(result.result_text.as_deref())
-                        .or_else(|| {
-                            for text in result.all_assistant_texts.iter().rev() {
-                                if let Some(v) = crate::judge::parse_verdict(Some(text)) {
-                                    tracing::info!("Found judge verdict in assistant text block (fallback)");
-                                    return Some(v);
-                                }
+                    crate::judge::parse_verdict(result.result_text.as_deref()).or_else(|| {
+                        for text in result.all_assistant_texts.iter().rev() {
+                            if let Some(v) = crate::judge::parse_verdict(Some(text)) {
+                                tracing::info!(
+                                    "Found judge verdict in assistant text block (fallback)"
+                                );
+                                return Some(v);
                             }
-                            None
-                        })
+                        }
+                        None
+                    })
                 } else {
                     None
                 };

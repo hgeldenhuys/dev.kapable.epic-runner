@@ -156,15 +156,20 @@ mod tests {
     #[test]
     fn default_flow_parses() {
         let flow = CeremonyFlow::default_flow();
-        assert_eq!(flow.nodes.len(), 14); // v3: removed inter-step gates (gate_research, gate_groom, gate_execute, gate_code), added gate_deploy_ok
-        assert_eq!(flow.edges.len(), 16); // v3: sequential flow + deploy chain gates
-        assert!(flow.node("research").is_some());
+        assert_eq!(flow.nodes.len(), 12); // v4: source → execute → judge → deploy chain → retro → output (no research/groom)
+        assert_eq!(flow.edges.len(), 14); // v4: direct execution + deploy chain gates
+        assert!(flow.node("source").is_some());
         assert!(flow.node("execute").is_some());
+        assert!(flow.node("judge_code").is_some());
         assert!(flow.node("deploy_standby").is_some());
         assert!(flow.node("gate_deploy").is_some());
         assert!(flow.node("judge_ab").is_some());
         assert!(flow.node("gate_ab").is_some());
         assert!(flow.node("promote").is_some());
+        assert!(flow.node("sm_retro").is_some());
+        // v4: no research or groom nodes
+        assert!(flow.node("research").is_none());
+        assert!(flow.node("groom").is_none());
     }
 
     #[test]
@@ -172,6 +177,6 @@ mod tests {
         let flow = CeremonyFlow::default_flow();
         let degrees = flow.in_degrees();
         assert_eq!(degrees["source"], 0);
-        assert!(degrees["research"] > 0);
+        assert!(degrees["execute"] > 0);
     }
 }

@@ -134,11 +134,11 @@ fn reverse_adjacency_maps_targets_to_sources() {
     // source has no parents (zero in-degree)
     assert!(rev.get("source").is_none());
 
-    // research's parent is source
-    assert!(rev["research"].contains(&"source".to_string()));
+    // execute's parent is source (v4 — direct execution, no research/groom)
+    assert!(rev["execute"].contains(&"source".to_string()));
 
-    // groom's parent is research (v3 — no inter-step gates)
-    assert!(rev["groom"].contains(&"research".to_string()));
+    // judge_code's parent is execute
+    assert!(rev["judge_code"].contains(&"execute".to_string()));
 
     // merge_results has multiple parents (deploy gate failures + promote)
     assert!(rev["merge_results"].len() >= 2);

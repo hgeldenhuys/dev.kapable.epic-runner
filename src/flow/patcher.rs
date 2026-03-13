@@ -338,33 +338,33 @@ edges:
     fn insert_node_preserves_gate_handle() {
         let flow = CeremonyFlow::default_flow();
         let new_node = CeremonyNode {
-            key: "research_review".to_string(),
+            key: "pre_execute_check".to_string(),
             node_type: CeremonyNodeType::Harness,
-            label: "Research Review".to_string(),
+            label: "Pre-Execute Check".to_string(),
             config: CeremonyNodeConfig {
                 model: Some("sonnet".to_string()),
-                prompt: Some("Review research quality".to_string()),
+                prompt: Some("Check readiness before execution".to_string()),
                 ..Default::default()
             },
             always_run: false,
         };
 
-        // Insert between research → groom (v3 — no inter-step gates)
+        // Insert between source → execute (v4 — direct execution, no research/groom)
         let patches = vec![FlowPatch::InsertNode {
             node: Box::new(new_node),
-            after_node: "research".to_string(),
-            before_node: "groom".to_string(),
+            after_node: "source".to_string(),
+            before_node: "execute".to_string(),
         }];
 
         let result = apply_patches(&flow, &patches);
         assert_eq!(result.applied.len(), 1);
 
-        // Verify the edge is created: research → research_review
+        // Verify the edge is created: source → pre_execute_check
         let edge = result
             .flow
             .edges
             .iter()
-            .find(|e| e.source == "research" && e.target == "research_review");
+            .find(|e| e.source == "source" && e.target == "pre_execute_check");
         assert!(edge.is_some());
     }
 

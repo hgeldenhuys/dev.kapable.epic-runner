@@ -934,7 +934,9 @@ async fn save_sprint_learnings(
         }
     }
     if all_parsed.is_empty() {
-        tracing::warn!("Could not extract JSON from retro output or assistant texts — skipping learnings save");
+        tracing::warn!(
+            "Could not extract JSON from retro output or assistant texts — skipping learnings save"
+        );
         return;
     }
 

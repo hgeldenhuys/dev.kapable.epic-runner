@@ -1,101 +1,20 @@
 name: "Default Sprint Ceremony"
-version: "3.0.0"
+version: "4.0.0"
 description: |
-  v3 ceremony flow — sprint integrity model.
-  Research → Groom → Execute flow sequentially (no inter-step gates).
-  Code judge ALWAYS runs — evaluates mission progress, not just pass/fail.
-  Deploy chain is conditional (only if judge says deploy_ready).
-  Retro ALWAYS runs — the learning loop is the moat.
-  Sprints never fail. They complete with whatever work got done.
+  v4 ceremony flow — lean execution model.
+  Stories arrive pre-groomed (plan, ACs, tasks attached at creation time).
+  Sprint = pure execution. No in-sprint research or grooming.
+  source → execute (per-story) → judge → [deploy chain] → retro → output.
+  Each story gets its own Claude session (UUID = session_id).
+  Stop hook enforces task completion before session can end.
+  Judge evaluates ACs, adds tasks/stories for rework, sets sprint goal.
+  Retro resumes each story session for scrum-master interview.
 
 nodes:
   - key: source
     node_type: source
     label: "Epic Context"
     config: {}
-
-  - key: research
-    node_type: harness
-    label: "External Research"
-    config:
-      model: sonnet
-      effort: medium
-      budget_usd: 1.5
-      chrome: false
-      heartbeat_timeout_secs: 180
-      max_turns: 15
-      agent: researcher
-      system_prompt: |
-        Epic: {{epic.code}} — {{epic.title}}
-        Intent: {{epic.intent}}
-
-        Product Brief:
-        {{product.brief}}
-
-        You are a planning-tier research agent. You make strategic decisions about
-        what external intelligence the team needs, then gather it.
-      prompt: |
-        Review the stories for epic {{epic.code}} and DECIDE what research is needed:
-        {{stories}}
-
-        Intent: {{epic.intent}}
-
-        TRIAGE — for each story, decide ONE of:
-        A) NO RESEARCH — story is internal (refactoring, CLI flags, bug fixes, plumbing, tests)
-        B) WEB RESEARCH — story needs knowledge about external APIs, libraries, standards, protocols
-        C) COMMITTEE REVIEW — story involves architecture decisions, design trade-offs, or strategy
-
-        COMMITTEE REVIEW PROCESS (for option C):
-        Convene a virtual panel of 3 domain experts whose perspectives create productive tension.
-        Pick from: Security, DevOps, DX, Product, Architecture, Performance, Data, Testing, UX, Business.
-        For each expert: (1) Challenge an assumption, (2) Share domain-specific insight, (3) Give a concrete recommendation.
-        Experts MUST disagree with each other where domains conflict.
-        Synthesize a verdict table with actionable decisions.
-
-        RULES:
-        - If ALL stories need no research → output "No research needed" and stop (1-2 turns max)
-        - If .epic-runner/research/{{epic.code}}/findings.md exists → READ it first, AUGMENT don't redo
-        - Write all findings (web + committee) to .epic-runner/research/{{epic.code}}/findings.md
-        - Only research stories that DON'T already have acceptance_criteria populated
-        - Output ONLY the file path you wrote to, or "No research needed."
-
-  - key: groom
-    node_type: harness
-    label: "Groom (DoR + ACs)"
-    config:
-      model: sonnet
-      effort: medium
-      budget_usd: 2.0
-      chrome: false
-      heartbeat_timeout_secs: 240
-      max_turns: 15
-      agent: groomer
-      system_prompt: |
-        Grooming stories for epic {{epic.code}}.
-
-        Product Brief:
-        {{product.brief}}
-
-        Project conventions (from CLAUDE.md):
-        {{repo.claude_md}}
-      prompt: |
-        Stories to groom for epic {{epic.code}}:
-        {{stories}}
-
-        Research findings (if any): .epic-runner/research/{{epic.code}}/findings.md
-
-        Instructions:
-        - SKIP stories that already have acceptance_criteria populated — they were groomed in a previous sprint. Only re-groom if the judge explicitly requested it.
-        - You are responsible for codebase exploration. Find relevant files, patterns, and line numbers for each story.
-
-        For each story that NEEDS grooming:
-        1. Explore the codebase — find specific files and line numbers for modification points
-        2. Add specific, testable acceptance criteria (Given/When/Then)
-        3. Estimate story points (1/2/3/5/8)
-        4. List dependencies between stories
-        5. Define test plan (what command verifies it works)
-
-        Output ALL stories (groomed + already-groomed) as a single JSON array. No markdown fences, no preamble, no trailing text. Each story object MUST include the original "id" field so results can be written back to the database.
 
   - key: execute
     node_type: loop
@@ -136,8 +55,6 @@ nodes:
         The story has acceptance_criteria, tasks, and dependencies already populated
         from planning. Use those directly — they are the source of truth.
 
-        Research context (if any) is at .epic-runner/research/{{epic.code}}/findings.md
-
         Implement all tasks, verify all acceptance criteria, then commit.
         Report your results as structured JSON (see builder agent instructions).
 
@@ -147,7 +64,7 @@ nodes:
     always_run: true
     config:
       model: sonnet
-      effort: medium
+      effort: high
       budget_usd: 2.0
       chrome: false
       heartbeat_timeout_secs: 180
@@ -177,11 +94,19 @@ nodes:
 
         For EACH story: verify its acceptance_criteria are satisfied and its tasks are done.
 
+        If a story's ACs are NOT met:
+        - Add new tasks to the story for the next sprint
+        - If a story was blocked, unblock it if possible
+        - If ALL remaining stories are blocked, flag the epic as blocked
+
+        If a story needs re-planning (wrong approach, missed requirements):
+        - Add it to stories_to_regroom so the next sprint can re-plan it
+
         Output structured JSON with ALL fields:
         1. mission_progress (0-100%): How much of the epic intent is now satisfied?
         2. stories_completed: List of story CODES whose ACs are all verified
         3. stories_to_regroom: Story CODES where the plan was wrong and need re-planning
-        4. delta_stories: NEW stories discovered during this sprint
+        4. delta_stories: NEW stories discovered during this sprint (smoke tests, integration tests, etc.)
         5. deploy_ready (bool): Is the code ready to deploy?
         6. intent_satisfied (bool): Is the full epic mission complete?
         7. next_sprint_goal (string): Refined goal for the NEXT sprint based on what was accomplished and what remains
@@ -294,12 +219,8 @@ nodes:
     config: {}
 
 edges:
-  # Sequential flow — no gates between research/groom/execute
+  # Direct to execution — stories arrive pre-groomed
   - source: source
-    target: research
-  - source: research
-    target: groom
-  - source: groom
     target: execute
 
   # Judge ALWAYS runs after execute (always_run: true)

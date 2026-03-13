@@ -34,7 +34,7 @@ src/
   impediments.rs       # Cross-epic blocker queries
   flow/
     definition.rs      # CeremonyFlow, CeremonyNode types
-    default_flow.yaml  # 14-node ceremony DAG (embedded via include_str!)
+    default_flow.yaml  # 12-node v4 ceremony DAG (no research/groom — stories arrive pre-groomed) (embedded via include_str!)
     engine.rs          # Kahn's BFS executor with gate skipping
     loader.rs          # Flow loading cascade (file → config → embedded)
   commands/
