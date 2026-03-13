@@ -855,7 +855,9 @@ async fn execute_node(
                             if story_result.id.is_empty() {
                                 story_result.id = story_id.to_string();
                             }
-                            if story_result.code.is_none() || story_result.code.as_deref() == Some("") {
+                            if story_result.code.is_none()
+                                || story_result.code.as_deref() == Some("")
+                            {
                                 story_result.code = Some(story_code.to_string());
                             }
                         }

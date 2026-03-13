@@ -598,6 +598,8 @@ pub enum SprintEventType {
     Failed,
     /// Deploy node progress step (merge, push, trigger, wait, verify)
     DeployStep,
+    /// Aggregated tool use summary (replaces individual CeremonyStarted events for high-frequency tools)
+    ToolUseSummary,
 }
 
 impl SprintEvent {
@@ -620,6 +622,7 @@ impl SprintEvent {
             SprintEventType::Completed => "completed",
             SprintEventType::Failed => "failed",
             SprintEventType::DeployStep => "deploy_step",
+            SprintEventType::ToolUseSummary => "tool_use_summary",
         }
     }
 }

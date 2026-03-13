@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -7,6 +8,11 @@ use uuid::Uuid;
 use crate::agents;
 use crate::stream::{self, StreamEvent};
 use crate::types::{SprintEvent, SprintEventType};
+
+/// Tools that generate high-frequency events during codebase exploration.
+/// These are aggregated into a single summary event per executor run instead
+/// of emitting individual CeremonyStarted events (which can produce 500+ events).
+const HIGH_FREQUENCY_TOOLS: &[&str] = &["Read", "Grep", "Glob", "Bash"];
 
 #[derive(Clone)]
 pub struct ExecutorConfig {
@@ -51,6 +57,10 @@ pub struct ExecutorResult {
     /// (like JSON arrays from the groomer) often appears in earlier messages.
     /// Consumers should search these when `result_text` fails to parse.
     pub all_assistant_texts: Vec<String>,
+    /// Aggregated tool call counts for high-frequency tools (Read, Grep, Glob, Bash).
+    /// These are counted instead of emitting individual CeremonyStarted events,
+    /// reducing event volume by 90%+ for research-heavy nodes.
+    pub tool_event_counts: HashMap<String, u64>,
 }
 
 pub fn build_command(config: &ExecutorConfig) -> Command {
@@ -134,6 +144,7 @@ pub async fn execute(
     let mut last_tool_use = None;
     let mut user_messages: Vec<String> = Vec::new();
     let mut all_assistant_texts: Vec<String> = Vec::new();
+    let mut tool_event_counts: HashMap<String, u64> = HashMap::new();
     let heartbeat = Duration::from_secs(config.heartbeat_timeout_secs);
 
     loop {
@@ -195,18 +206,23 @@ pub async fn execute(
                                         }
                                         if let stream::ContentBlock::ToolUse { name, .. } = block {
                                             last_tool_use = Some(name.clone());
-                                            let se = SprintEvent {
-                                                sprint_id: config.session_id,
-                                                event_type: SprintEventType::CeremonyStarted,
-                                                node_id: config.node_id.clone(),
-                                                node_label: config.node_label.clone(),
-                                                summary: format!("Tool: {name}"),
-                                                detail: None,
-                                                cost_usd: None,
-                                                timestamp: chrono::Utc::now(),
-                                            };
-                                            event_callback(se.clone());
-                                            events.push(se);
+                                            if is_high_frequency_tool(name) {
+                                                // Aggregate instead of emitting individually
+                                                *tool_event_counts.entry(name.clone()).or_insert(0) += 1;
+                                            } else {
+                                                let se = SprintEvent {
+                                                    sprint_id: config.session_id,
+                                                    event_type: SprintEventType::CeremonyStarted,
+                                                    node_id: config.node_id.clone(),
+                                                    node_label: config.node_label.clone(),
+                                                    summary: format!("Tool: {name}"),
+                                                    detail: None,
+                                                    cost_usd: None,
+                                                    timestamp: chrono::Utc::now(),
+                                                };
+                                                event_callback(se.clone());
+                                                events.push(se);
+                                            }
                                         }
                                     }
                                 }
@@ -237,6 +253,28 @@ pub async fn execute(
 
     let status = child.wait().await?;
 
+    // Emit a single summary event for aggregated high-frequency tool calls
+    if !tool_event_counts.is_empty() {
+        let mut counts: Vec<_> = tool_event_counts.iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(a.1));
+        let summary_parts: Vec<String> = counts
+            .iter()
+            .map(|(tool, count)| format!("{tool}:{count}"))
+            .collect();
+        let se = SprintEvent {
+            sprint_id: config.session_id,
+            event_type: SprintEventType::ToolUseSummary,
+            node_id: config.node_id.clone(),
+            node_label: config.node_label.clone(),
+            summary: format!("Tool use: {}", summary_parts.join(", ")),
+            detail: Some(serde_json::json!({"tool_counts": &tool_event_counts})),
+            cost_usd: None,
+            timestamp: chrono::Utc::now(),
+        };
+        event_callback(se.clone());
+        events.push(se);
+    }
+
     Ok(ExecutorResult {
         session_id: config.session_id,
         exit_code: status.code().unwrap_or(-1),
@@ -247,5 +285,103 @@ pub async fn execute(
         last_tool_use,
         user_messages,
         all_assistant_texts,
+        tool_event_counts,
     })
+}
+
+/// Returns true if this tool generates high-frequency events that should be
+/// aggregated into summaries rather than emitted individually.
+pub fn is_high_frequency_tool(name: &str) -> bool {
+    HIGH_FREQUENCY_TOOLS.contains(&name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_sink_aggregation() {
+        // High-frequency tools should be aggregated (not emitted individually)
+        assert!(is_high_frequency_tool("Read"));
+        assert!(is_high_frequency_tool("Grep"));
+        assert!(is_high_frequency_tool("Glob"));
+        assert!(is_high_frequency_tool("Bash"));
+
+        // Low-frequency/high-signal tools should NOT be aggregated
+        assert!(!is_high_frequency_tool("Write"));
+        assert!(!is_high_frequency_tool("Edit"));
+        assert!(!is_high_frequency_tool("Agent"));
+        assert!(!is_high_frequency_tool("TodoWrite"));
+        assert!(!is_high_frequency_tool("Skill"));
+
+        // Verify counting logic produces correct aggregation
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        let tool_calls = vec![
+            "Read", "Read", "Grep", "Read", "Bash", "Grep", "Read", "Glob", "Read", "Grep", "Bash",
+            "Read", "Read", "Glob",
+        ];
+
+        for tool in &tool_calls {
+            if is_high_frequency_tool(tool) {
+                *counts.entry(tool.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        // All 14 tool calls should be counted (all are high-frequency)
+        assert_eq!(counts.get("Read"), Some(&7));
+        assert_eq!(counts.get("Grep"), Some(&3));
+        assert_eq!(counts.get("Bash"), Some(&2));
+        assert_eq!(counts.get("Glob"), Some(&2));
+
+        // Total aggregated count matches total tool calls
+        let total: u64 = counts.values().sum();
+        assert_eq!(total, tool_calls.len() as u64);
+
+        // Summary would be 1 event instead of 14 individual events
+        assert!(counts.len() <= 4); // At most 4 tool categories
+    }
+
+    #[test]
+    fn event_sink_aggregation_mixed_tools() {
+        // Simulate a real session with mixed high/low-frequency tools
+        let tool_calls = vec![
+            "Read",
+            "Read",
+            "Grep",
+            "Write",
+            "Read",
+            "Bash",
+            "Edit",
+            "Glob",
+            "Read",
+            "Agent",
+            "Grep",
+            "TodoWrite",
+        ];
+
+        let mut aggregated: HashMap<String, u64> = HashMap::new();
+        let mut emitted_count = 0u64;
+
+        for tool in &tool_calls {
+            if is_high_frequency_tool(tool) {
+                *aggregated.entry(tool.to_string()).or_insert(0) += 1;
+            } else {
+                emitted_count += 1;
+            }
+        }
+
+        // 8 high-frequency calls aggregated into counts
+        let aggregated_total: u64 = aggregated.values().sum();
+        assert_eq!(aggregated_total, 8);
+
+        // 4 low-frequency calls emitted individually
+        assert_eq!(emitted_count, 4);
+
+        // Event reduction: 1 summary + 4 individual = 5 events instead of 12
+        // That's 58% reduction even with mixed tools. In practice, research nodes
+        // have >95% high-frequency tools, yielding 90%+ reduction.
+        let events_before = tool_calls.len() as u64;
+        let events_after = 1 + emitted_count; // 1 summary + individual low-freq
+        assert!(events_after < events_before);
+    }
 }
