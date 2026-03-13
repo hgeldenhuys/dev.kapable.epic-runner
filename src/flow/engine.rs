@@ -848,6 +848,18 @@ async fn execute_node(
                     if let Some(mut builder_out) = crate::builder::parse_builder_output(
                         supervised.executor_result.result_text.as_deref(),
                     ) {
+                        // Inject story ID into builder results if the agent omitted it.
+                        // The builder agent may not echo the story UUID in its JSON output,
+                        // but we know which story was being worked on from the per-story loop.
+                        for story_result in &mut builder_out.stories {
+                            if story_result.id.is_empty() {
+                                story_result.id = story_id.to_string();
+                            }
+                            if story_result.code.is_none() || story_result.code.as_deref() == Some("") {
+                                story_result.code = Some(story_code.to_string());
+                            }
+                        }
+
                         // Merge hook-tracked changed_files into builder output
                         let hook_files: Vec<String> = std::fs::read_to_string(&changed_files_path)
                             .unwrap_or_default()
