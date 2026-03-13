@@ -2,6 +2,7 @@ use clap::Args;
 use owo_colors::OwoColorize;
 use serde_json::json;
 
+use super::backlog::next_story_code;
 use super::CliConfig;
 use crate::api_client::ApiClient;
 use crate::event_sink::EventSink;
@@ -488,6 +489,14 @@ pub async fn run(
     if let Some(verdict) = &judge_verdict {
         if let Some(delta_stories) = &verdict.delta_stories {
             for delta in delta_stories {
+                // Get sequential code for each delta story (called per-story for uniqueness)
+                let story_code = match next_story_code(client, &epic.product_id.to_string()).await {
+                    Ok(code) => code,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to generate story code for delta story, skipping code assignment");
+                        String::new()
+                    }
+                };
                 let body = json!({
                     "product_id": epic.product_id.to_string(),
                     "title": delta.title,
@@ -495,6 +504,8 @@ pub async fn run(
                     "status": "draft",
                     "size": delta.size,
                     "tags": delta.tags,
+                    "code": story_code,
+                    "epic_code": epic.code,
                 });
                 // Write to v3 backlog_items table (best-effort)
                 let _ = client
@@ -509,10 +520,12 @@ pub async fn run(
                             "title": delta.title,
                             "description": delta.description,
                             "status": "draft",
+                            "code": story_code,
+                            "epic_code": epic.code,
                         }),
                     )
                     .await;
-                tracing::info!(title = %delta.title, "Judge created delta story → backlog");
+                tracing::info!(title = %delta.title, code = %story_code, "Judge created delta story → backlog");
             }
             if !delta_stories.is_empty() {
                 eprintln!(
