@@ -70,6 +70,19 @@ API URL + key resolution: CLI flag → env var → project config → home confi
 
 Project config: `.epic-runner/config.toml` (walks up from CWD to `.git` boundary).
 
+## Stop Hook CLI Commands
+
+The stop hook blocks builder sessions until tasks are done. Builders mark progress via CLI:
+
+```bash
+epic-runner backlog task-done <STORY_CODE> <INDEX>    # Mark task as done (0-based index)
+epic-runner backlog ac-verify <STORY_CODE> <INDEX>    # Mark AC as verified
+epic-runner backlog block <STORY_CODE> --reason "..."  # Flag story as blocked (escape hatch)
+```
+
+These update both the API and local `.epic-runner/stories/{uuid}.json` (for stop hook).
+Max stop iterations: 3 (configurable via `EPIC_RUNNER_MAX_STOP_ITERATIONS`).
+
 ## Exit Code Protocol
 
 `sprint-run` communicates outcome to `orchestrate` via process exit codes:
