@@ -49,8 +49,21 @@ pub struct CreateProduct {
 /// Structured so agents and humans can verify completion mechanically.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptanceCriterion {
-    /// The criterion text (Given/When/Then or plain assertion)
+    /// The criterion text (Given/When/Then as single string, or plain assertion)
+    #[serde(default)]
     pub criterion: String,
+    /// Short title for the AC (used by groomer agents)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Given clause (structured GWT format from groomer)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given: Option<String>,
+    /// When clause (structured GWT format from groomer)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    /// Then clause (structured GWT format from groomer)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<String>,
     /// How to verify this criterion (shell command, curl, manual step)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub testable_by: Option<String>,
@@ -68,14 +81,33 @@ pub struct AcceptanceCriterion {
     pub evidence: Option<String>,
 }
 
+impl AcceptanceCriterion {
+    /// Returns the best display text for this AC.
+    /// Prefers `criterion` if set, otherwise synthesizes from GWT fields or title.
+    pub fn display_text(&self) -> String {
+        if !self.criterion.is_empty() {
+            return self.criterion.clone();
+        }
+        if let (Some(g), Some(w), Some(t)) = (&self.given, &self.when, &self.then) {
+            return format!("Given {} When {} Then {}", g, w, t);
+        }
+        if let Some(title) = &self.title {
+            return title.clone();
+        }
+        "(no criterion text)".to_string()
+    }
+}
+
 // ── Story Task ───────────────────────────────
 
 /// A discrete unit of work within a story, assigned to a persona.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryTask {
     /// What needs to be done
+    #[serde(default)]
     pub description: String,
     /// Persona responsible: backend_engineer, frontend_engineer, qa_engineer, architect, devops
+    #[serde(default)]
     pub persona: String,
     /// File path to modify
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +130,7 @@ pub struct StoryTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryPlan {
     /// High-level approach (1-3 sentences)
+    #[serde(default)]
     pub approach: String,
     /// Known risks or unknowns
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,6 +147,7 @@ pub struct StoryPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryLogEntry {
     /// What happened in this session (1-3 sentences)
+    #[serde(default)]
     pub summary: String,
     /// Claude Code session ID (for transcript lookup)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,6 +167,7 @@ pub struct StoryLogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionItem {
     /// What needs to be done
+    #[serde(default)]
     pub description: String,
     /// Story code this was discovered from (e.g. "ER-042")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,8 +195,10 @@ fn default_action_item_status() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoDCheckItem {
     /// Human-readable rule name (e.g. "Unit Tests Pass")
+    #[serde(default)]
     pub name: String,
     /// What this check verifies (context for the judge)
+    #[serde(default)]
     pub description: String,
     /// Category: code_quality, testing, deployment, documentation, process
     #[serde(default = "default_category")]
@@ -203,6 +240,7 @@ pub struct Story {
     /// The WHAT — verb-led outcome, not a feature name.
     /// Good: "User logs in with email and password"
     /// Bad: "Login page"
+    #[serde(default)]
     pub title: String,
     /// The WHY — "so that [measurable outcome]".
     /// This is the most important field for trade-off decisions.

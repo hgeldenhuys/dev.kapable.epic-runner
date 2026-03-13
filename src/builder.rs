@@ -254,10 +254,14 @@ pub fn merge_acceptance_criteria(
         .map(|gac| {
             let builder_match = builder_acs
                 .iter()
-                .find(|bac| bac.criterion == gac.criterion);
+                .find(|bac| bac.criterion == gac.display_text());
 
             AcceptanceCriterion {
                 criterion: gac.criterion.clone(),
+                title: gac.title.clone(),
+                given: gac.given.clone(),
+                when: gac.when.clone(),
+                then: gac.then.clone(),
                 testable_by: gac.testable_by.clone(),
                 file: gac.file.clone(),
                 line_hint: gac.line_hint.clone(),
@@ -379,6 +383,10 @@ mod tests {
     fn merge_acs_preserves_groomer_fields() {
         let groomed = vec![AcceptanceCriterion {
             criterion: "Tests pass".to_string(),
+            title: None,
+            given: None,
+            when: None,
+            then: None,
             testable_by: Some("cargo test".to_string()),
             file: Some("src/lib.rs".to_string()),
             line_hint: None,
