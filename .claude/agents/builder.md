@@ -42,11 +42,22 @@ For each story in priority order:
 
 Your FINAL message MUST end with a JSON block in ```json fences. This is machine-parsed by the ceremony engine. Every input story, task, and AC must appear in the output.
 
+### Story ID — Read from EPIC_RUNNER_STORY_FILE
+
+The `EPIC_RUNNER_STORY_FILE` env var points to a JSON file containing your story. Read it and extract the `id` field (a UUID). You MUST echo this UUID back verbatim in your output's `id` field.
+
+```bash
+# The engine sets this env var automatically:
+cat "$EPIC_RUNNER_STORY_FILE" | jq -r '.id'
+```
+
+> **WARNING — Write-back failure:** If you omit the `id` field or use a wrong value, the ceremony engine cannot match your output to the story. The story will NOT be updated, tasks will not be marked done, and your work will be lost from the ceremony record. Always read the UUID from `EPIC_RUNNER_STORY_FILE` — never guess or fabricate it.
+
 ```json
 {
   "stories": [
     {
-      "id": "<story UUID from input>",
+      "id": "<story UUID — MUST read from EPIC_RUNNER_STORY_FILE JSON and echo verbatim>",
       "code": "<story code>",
       "status": "done" | "blocked" | "in_progress",
       "blocked_reason": null | "<reason>",

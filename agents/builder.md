@@ -47,11 +47,22 @@ For deeper context on external libraries or patterns, check `.epic-runner/resear
 
 Your FINAL output MUST be a single JSON object. No preamble, no commentary, no markdown around it. Start with `{` and end with `}`.
 
+### Story ID — Read from EPIC_RUNNER_STORY_FILE
+
+The `EPIC_RUNNER_STORY_FILE` env var points to a JSON file containing your story. Read it and extract the `id` field (a UUID). You MUST echo this UUID back verbatim in your output's `id` field.
+
+```bash
+# The engine sets this env var automatically:
+cat "$EPIC_RUNNER_STORY_FILE" | jq -r '.id'
+```
+
+> **WARNING — Write-back failure:** If you omit the `id` field or use a wrong value, the ceremony engine cannot match your output to the story. The story will NOT be updated, tasks will not be marked done, and your work will be lost from the ceremony record. Always read the UUID from `EPIC_RUNNER_STORY_FILE` — never guess or fabricate it.
+
 ```json
 {
   "stories": [
     {
-      "id": "<story UUID — MUST match the input story's id>",
+      "id": "<story UUID — MUST read from EPIC_RUNNER_STORY_FILE JSON and echo verbatim>",
       "code": "<story code e.g. ER-042>",
       "status": "done|blocked|in_progress",
       "blocked_reason": "<only if status is blocked — explain why>",
@@ -90,7 +101,7 @@ Your FINAL output MUST be a single JSON object. No preamble, no commentary, no m
 ```
 
 **Rules for the JSON:**
-- The `id` field MUST exactly match the story's UUID from the input
+- The `id` field MUST be read from `EPIC_RUNNER_STORY_FILE` env var (parse the JSON, extract `.id`) and echoed back verbatim — omitting it causes write-back failure
 - Task `description` fields MUST exactly match the input — the system matches on description
 - AC `criterion` fields MUST exactly match the input — same matching logic
 - If you are blocked, set `status: "blocked"` and provide `blocked_reason`
