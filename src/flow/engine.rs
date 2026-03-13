@@ -102,6 +102,14 @@ pub struct FlowContext {
     /// this contains the curl deploy commands so the builder can self-deploy.
     /// Injected via {{deploy_instructions}} template variable.
     pub deploy_instructions: String,
+    /// Product deploy profile: "connect_app", "bootstrap", or "none".
+    /// Controls whether the deploy chain runs. "none" skips the entire chain.
+    /// Injected via {{product.deploy_profile}} template variable.
+    pub deploy_profile: String,
+    /// Product-level Connect App Pipeline app ID.
+    /// Takes priority over DEPLOY_APP_ID env var in deploy config resolution.
+    /// Injected via {{product.deploy_app_id}} template variable.
+    pub product_deploy_app_id: Option<String>,
 }
 
 /// Result of executing one node.
@@ -827,10 +835,12 @@ async fn execute_node(
 
             // Evaluate direct upstream node(s) via reverse adjacency — NOT HashMap::last()
             // which has non-deterministic iteration order (IMP-835)
-            let upstream_status = parent_keys
+            let upstream_result = parent_keys
                 .iter()
                 .filter_map(|pk| upstream.get(pk))
-                .next_back()
+                .next_back();
+
+            let upstream_status = upstream_result
                 .map(|r| match field {
                     "status" => format!("{:?}", r.status).to_lowercase(),
                     "impediment_raised" => r.impediment_raised.to_string(),
@@ -838,10 +848,26 @@ async fn execute_node(
                 })
                 .unwrap_or_default();
 
+            // When upstream was Skipped, propagate Skipped (not Failed).
+            // This distinguishes "deploy wasn't needed" (profile: none) from
+            // "deploy failed" (real problem). Skipped gates still cause pass-edge
+            // targets to be skipped via propagate_skip (!gate_passed && is_pass_edge).
+            let upstream_was_skipped = upstream_result
+                .map(|r| r.status == CeremonyStatus::Skipped)
+                .unwrap_or(false);
+
             let passed = upstream_status.contains(expect);
+            let status = if passed {
+                CeremonyStatus::Completed
+            } else if upstream_was_skipped {
+                CeremonyStatus::Skipped
+            } else {
+                CeremonyStatus::Failed
+            };
+
             tracing::info!(
                 label = %node.label,
-                result = if passed { "PASS" } else { "FAIL" },
+                result = if passed { "PASS" } else if upstream_was_skipped { "SKIPPED" } else { "FAIL" },
                 expect,
                 got = %upstream_status,
                 "Gate evaluated"
@@ -849,11 +875,7 @@ async fn execute_node(
 
             Ok(NodeResult {
                 key: node.key.clone(),
-                status: if passed {
-                    CeremonyStatus::Completed
-                } else {
-                    CeremonyStatus::Failed
-                },
+                status,
                 output: Some(format!("gate: {} = {}", field, upstream_status)),
                 cost_usd: None,
                 impediment_raised: false,
@@ -1151,6 +1173,37 @@ async fn execute_deploy_node(
     ctx: &FlowContext,
     sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
+    // Early exit: deploy_profile "none" means this product doesn't deploy (e.g. CLI tool).
+    // Skip immediately without doing any git operations.
+    if ctx.deploy_profile == "none" {
+        let msg =
+            "deploy_profile is 'none' — skipping deploy (product does not deploy)".to_string();
+        tracing::info!("{}", msg);
+        sink.emit(SprintEvent {
+            sprint_id: ctx.sprint.session_id,
+            event_type: SprintEventType::DeployStep,
+            node_id: Some(node.key.clone()),
+            node_label: Some(node.label.clone()),
+            summary: msg.clone(),
+            detail: None,
+            cost_usd: None,
+            timestamp: chrono::Utc::now(),
+        });
+        return Ok(NodeResult {
+            key: node.key.clone(),
+            status: CeremonyStatus::Skipped,
+            output: Some(msg),
+            cost_usd: None,
+            impediment_raised: false,
+            judge_verdict: None,
+            supervisor_decisions: vec![],
+            rubber_duck_sessions: vec![],
+            builder_output: None,
+            all_assistant_texts: vec![],
+            duration_seconds: None,
+        });
+    }
+
     let c = &node.config;
     let worktree_path = format!(".claude/worktrees/{}", ctx.epic.code);
     let worktree_branch = format!("worktree-{}", ctx.epic.code);
@@ -1491,7 +1544,7 @@ async fn execute_deploy_node(
     // Step 4: Trigger Connect App Pipeline
     // If no deploy_app_id is configured, skip gracefully — this product is a CLI tool
     // (or other non-Connect-App artifact) that doesn't need pipeline deployment.
-    let cfg = match resolve_deploy_config(c) {
+    let cfg = match resolve_deploy_config(c, ctx.product_deploy_app_id.as_deref()) {
         Ok(cfg) => cfg,
         Err(_) => {
             let msg = "No deploy_app_id configured — skipping deploy (CLI/non-Connect-App product)";
@@ -1759,9 +1812,28 @@ async fn execute_promote_node(
     ctx: &FlowContext,
     sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
+    // Early exit: deploy_profile "none" means this product doesn't deploy.
+    if ctx.deploy_profile == "none" {
+        let msg = "deploy_profile is 'none' — skipping promote (product does not deploy)";
+        tracing::info!("{}", msg);
+        return Ok(NodeResult {
+            key: node.key.clone(),
+            status: CeremonyStatus::Skipped,
+            output: Some(msg.to_string()),
+            cost_usd: None,
+            impediment_raised: false,
+            judge_verdict: None,
+            supervisor_decisions: vec![],
+            rubber_duck_sessions: vec![],
+            builder_output: None,
+            all_assistant_texts: vec![],
+            duration_seconds: None,
+        });
+    }
+
     let c = &node.config;
     // If no deploy_app_id is configured, skip gracefully — nothing to promote.
-    let cfg = match resolve_deploy_config(c) {
+    let cfg = match resolve_deploy_config(c, ctx.product_deploy_app_id.as_deref()) {
         Ok(cfg) => cfg,
         Err(_) => {
             let msg =
@@ -1865,7 +1937,10 @@ struct DeployConfig {
 }
 
 /// Resolve deploy configuration from node config → project config → env vars.
-fn resolve_deploy_config(c: &CeremonyNodeConfig) -> Result<DeployConfig, String> {
+fn resolve_deploy_config(
+    c: &CeremonyNodeConfig,
+    product_deploy_app_id: Option<&str>,
+) -> Result<DeployConfig, String> {
     let project_config =
         crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
 
@@ -1880,10 +1955,12 @@ fn resolve_deploy_config(c: &CeremonyNodeConfig) -> Result<DeployConfig, String>
         }
     };
 
+    // Resolution chain: YAML config → product deploy_app_id → project config → env var
     let app_id = c
         .deploy_app_id
         .as_deref()
         .and_then(resolve_env_ref)
+        .or_else(|| product_deploy_app_id.map(String::from))
         .or_else(|| {
             project_config
                 .as_ref()
@@ -2088,6 +2165,8 @@ fn build_executor_config(
 /// - {{epic_log}} — structured handoff summaries from all previous sprints (verdict, deploy, files, commits)
 /// - {{product.brief}} — product architecture, file map, conventions (cuts agent orientation cost)
 /// - {{product.definition_of_done}} — conditional DoD rules for the judge
+/// - {{product.deploy_profile}} — product deploy type: "connect_app", "bootstrap", or "none"
+/// - {{product.deploy_app_id}} — product Connect App Pipeline app ID (empty if not set)
 /// - {{deploy_instructions}} — curl deploy commands for cross-product stories (based on story tags)
 fn interpolate(
     template: &str,
@@ -2182,6 +2261,11 @@ fn interpolate(
         )
         .replace("{{story}}", &current_story_json)
         .replace("{{deploy_instructions}}", &ctx.deploy_instructions)
+        .replace("{{product.deploy_profile}}", &ctx.deploy_profile)
+        .replace(
+            "{{product.deploy_app_id}}",
+            ctx.product_deploy_app_id.as_deref().unwrap_or(""),
+        )
 }
 
 /// Get the checkpoint file path for a sprint session.
@@ -2418,6 +2502,8 @@ mod tests {
             current_story: None,
             research_notes_content: String::new(),
             deploy_instructions: String::new(),
+            deploy_profile: "none".to_string(),
+            product_deploy_app_id: None,
         }
     }
 

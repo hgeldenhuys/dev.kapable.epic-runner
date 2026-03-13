@@ -141,7 +141,7 @@ nodes:
     node_type: deploy
     label: "Deploy (Blue-Green)"
     config:
-      deploy_app_id: "${DEPLOY_APP_ID}"
+      # deploy_app_id resolved from: product.deploy_app_id → .epic-runner/config.toml → DEPLOY_APP_ID env var
       deploy_timeout_secs: 300
       deploy_production_url: "${DEPLOY_PRODUCTION_URL}"
 
@@ -188,11 +188,11 @@ nodes:
       gate_field: status
       gate_expect: completed
 
+  # deploy_app_id resolved from: product.deploy_app_id → .epic-runner/config.toml → DEPLOY_APP_ID env var
   - key: promote
     node_type: promote
     label: "Promote Standby → Primary"
-    config:
-      deploy_app_id: "${DEPLOY_APP_ID}"
+    config: {}
 
   - key: merge_results
     node_type: merge

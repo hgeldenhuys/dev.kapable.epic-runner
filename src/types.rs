@@ -29,6 +29,16 @@ pub struct Product {
     /// If not set, detect_default_branch() probes the remote at runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
+    /// Deploy profile: "connect_app" (blue-green via Connect App Pipeline),
+    /// "bootstrap" (Rust deploy pipeline), or "none" (CLI/non-deployable).
+    /// When "none", the entire deploy chain (deploy_standby, gate_deploy_ok,
+    /// judge_ab, gate_ab, promote) is skipped without failing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy_profile: Option<String>,
+    /// Connect App Pipeline app ID (UUID) for this product.
+    /// Replaces the hard-coded DEPLOY_APP_ID env var — each product declares its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy_app_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

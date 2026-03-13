@@ -257,6 +257,12 @@ pub async fn run(
     let resolved_repo_path =
         crate::repo_resolver::resolve_product_repo(product.repo_url.as_deref(), &product.repo_path)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let deploy_profile = product
+        .deploy_profile
+        .clone()
+        .unwrap_or_else(|| "none".to_string());
+    let product_deploy_app_id = product.deploy_app_id.clone();
+
     let ctx = engine::FlowContext {
         epic: epic.clone(),
         sprint: sprint.clone(),
@@ -277,6 +283,8 @@ pub async fn run(
         current_story: None,
         research_notes_content,
         deploy_instructions,
+        deploy_profile,
+        product_deploy_app_id,
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
