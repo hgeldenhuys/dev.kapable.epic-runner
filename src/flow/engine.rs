@@ -298,21 +298,54 @@ pub async fn execute_flow(
                     result.duration_seconds = Some(elapsed);
 
                     // Stream node_completed event to DB
+                    let mut detail = serde_json::json!({
+                        "node_key": node.key,
+                        "status": format!("{:?}", result.status),
+                        "cost_usd": result.cost_usd,
+                        "duration_seconds": elapsed,
+                        "elapsed_seconds": elapsed,
+                    });
+                    if result.status == CeremonyStatus::Failed {
+                        // Include error message from output for post-mortem analysis
+                        if let Some(ref output) = result.output {
+                            let error_msg = if output.len() > 500 {
+                                format!("{}...", &output[..500])
+                            } else {
+                                output.clone()
+                            };
+                            detail["error"] = serde_json::json!(error_msg);
+                        }
+                    }
                     sink.emit(SprintEvent {
                         sprint_id: ctx.sprint.session_id,
                         event_type: SprintEventType::NodeCompleted,
                         node_id: Some(node.key.clone()),
                         node_label: Some(node.label.clone()),
                         summary: format!("{} → {:?}", node.label, result.status),
-                        detail: Some(serde_json::json!({
-                            "node_key": node.key,
-                            "status": format!("{:?}", result.status),
-                            "cost_usd": result.cost_usd,
-                            "duration_seconds": elapsed,
-                        })),
+                        detail: Some(detail),
                         cost_usd: result.cost_usd,
                         timestamp: chrono::Utc::now(),
                     });
+
+                    // Emit a dedicated Failed event for failure analysis queries
+                    if result.status == CeremonyStatus::Failed {
+                        sink.emit(SprintEvent {
+                            sprint_id: ctx.sprint.session_id,
+                            event_type: SprintEventType::Failed,
+                            node_id: Some(node.key.clone()),
+                            node_label: Some(node.label.clone()),
+                            summary: format!("Node failed: {} ({})", node.label, node.key),
+                            detail: Some(serde_json::json!({
+                                "error": result.output.as_deref().unwrap_or("unknown error"),
+                                "node_key": node.key,
+                                "node_type": format!("{:?}", node.node_type),
+                                "elapsed_seconds": elapsed,
+                                "cost_usd": result.cost_usd,
+                            })),
+                            cost_usd: result.cost_usd,
+                            timestamp: chrono::Utc::now(),
+                        });
+                    }
 
                     Ok(result)
                 }

@@ -51,6 +51,8 @@ pub async fn run(
     })?;
     tracing::info!("Pre-flight auth check passed in child process");
 
+    let sprint_start = std::time::Instant::now();
+
     // 1. Load sprint from DB
     let sprint_resp: serde_json::Value = client
         .get(&format!("/v1/er_sprints/{}", args.sprint_id))
@@ -242,11 +244,16 @@ pub async fn run(
             tracing::error!(error = %e, "Flow execution crashed — marking sprint as cancelled");
             sink.emit(SprintEvent {
                 sprint_id: sprint.session_id,
-                event_type: SprintEventType::Completed,
+                event_type: SprintEventType::Failed,
                 node_id: None,
                 node_label: None,
-                summary: format!("Sprint {} cancelled (crash): {}", sprint.number, e),
-                detail: Some(json!({ "cancelled_reason": e.to_string() })),
+                summary: format!("Sprint {} failed (crash): {}", sprint.number, e),
+                detail: Some(json!({
+                    "error": e.to_string(),
+                    "node_key": "flow_engine",
+                    "elapsed_seconds": sprint_start.elapsed().as_secs_f64(),
+                    "failure_type": "crash",
+                })),
                 cost_usd: None,
                 timestamp: chrono::Utc::now(),
             });

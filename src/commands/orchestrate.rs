@@ -48,6 +48,10 @@ pub struct OrchestrateArgs {
     /// Sprint timeout in minutes (kills runaway sprint processes)
     #[arg(long, default_value = "90")]
     pub sprint_timeout: u64,
+
+    /// Maximum retries for transient sprint failures (network timeout, rate limit)
+    #[arg(long, default_value = "2")]
+    pub max_retries: u32,
 }
 
 pub async fn run(
@@ -193,6 +197,7 @@ pub async fn run(
         .unwrap_or(0) as i32;
 
     // Sprint loop — start numbering after the highest existing sprint
+    let mut consecutive_failures = 0u32;
     for i in 1..=args.max_sprints {
         let sprint_num = max_existing + i;
         eprintln!(
@@ -365,129 +370,212 @@ pub async fn run(
                 .await;
         }
 
-        // SPAWN SPRINT RUNNER AS CHILD PROCESS
-        tracing::info!(sprint_id, sprint_num, "Spawning sprint-run child process");
-        let mut cmd = std::process::Command::new(&exe_snapshot);
-        // Forward API credentials so child process can access the same project
-        cmd.arg("--url")
-            .arg(&client.base_url)
-            .arg("--key")
-            .arg(client.api_key())
-            .arg("sprint-run")
-            .arg(sprint_id);
-        // Only pass --model/--effort when user explicitly overrides.
-        // When omitted, sprint-run uses per-node models from the flow YAML.
-        if let Some(model) = &args.model {
-            cmd.arg("--model").arg(model);
-        }
-        if let Some(effort) = &args.effort {
-            cmd.arg("--effort").arg(effort);
-        }
-        for dir in &args.add_dir {
-            cmd.arg("--add-dir").arg(dir);
-        }
-        if let Some(flow) = &args.flow {
-            cmd.arg("--flow").arg(flow);
-        }
-        if let Some(budget) = args.budget_override {
-            cmd.arg("--budget-override").arg(budget.to_string());
-        }
+        // SPAWN SPRINT RUNNER AS CHILD PROCESS (with retry loop for transient failures)
+        let sprint_id_owned = sprint_id.to_string();
+        let mut should_break = false;
+        loop {
+            tracing::info!(sprint_id = %sprint_id_owned, sprint_num, "Spawning sprint-run child process");
+            let mut cmd = std::process::Command::new(&exe_snapshot);
+            // Forward API credentials so child process can access the same project
+            cmd.arg("--url")
+                .arg(&client.base_url)
+                .arg("--key")
+                .arg(client.api_key())
+                .arg("sprint-run")
+                .arg(&sprint_id_owned);
+            // Only pass --model/--effort when user explicitly overrides.
+            // When omitted, sprint-run uses per-node models from the flow YAML.
+            if let Some(model) = &args.model {
+                cmd.arg("--model").arg(model);
+            }
+            if let Some(effort) = &args.effort {
+                cmd.arg("--effort").arg(effort);
+            }
+            for dir in &args.add_dir {
+                cmd.arg("--add-dir").arg(dir);
+            }
+            if let Some(flow) = &args.flow {
+                cmd.arg("--flow").arg(flow);
+            }
+            if let Some(budget) = args.budget_override {
+                cmd.arg("--budget-override").arg(budget.to_string());
+            }
 
-        let mut child = cmd.spawn()?;
-        let child_pid = child.id();
-        let timeout_mins = args.sprint_timeout;
-        let timeout_duration = std::time::Duration::from_secs(timeout_mins * 60);
+            let mut child = cmd.spawn()?;
+            let child_pid = child.id();
+            let timeout_mins = args.sprint_timeout;
+            let timeout_duration = std::time::Duration::from_secs(timeout_mins * 60);
 
-        // Wait with timeout + outward heartbeat — prevents runaway processes from burning
-        // unlimited credits AND keeps the sprint's heartbeat_at field fresh in the DB so
-        // external observers (console UI) can detect zombie sprints.
-        let exit_code =
-            match wait_with_heartbeat(&mut child, timeout_duration, client, sprint_id).await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(_) => {
-                    eprintln!(
-                        "{} Sprint timed out after {} minutes — killing PID {}",
-                        "[timeout]".red().bold(),
-                        timeout_mins,
-                        child_pid,
-                    );
-                    // Kill the child process tree (cross-platform)
-                    kill_process_tree(child_pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    -1 // Treated as unexpected exit → sprint cancelled
-                }
-            };
-
-        tracing::info!(exit_code, "Sprint-run process exited");
-
-        match exit_code {
-            0 => {
-                // Intent satisfied — close epic
-                eprintln!(
-                    "{} — closing epic {}",
-                    "Intent satisfied".green().bold(),
-                    epic.code
-                );
-                if let Err(e) = client
-                    .patch::<_, serde_json::Value>(
-                        &format!("/v1/epics/{}", epic.id),
-                        &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
-                    )
+            // Wait with timeout + outward heartbeat — prevents runaway processes from burning
+            // unlimited credits AND keeps the sprint's heartbeat_at field fresh in the DB so
+            // external observers (console UI) can detect zombie sprints.
+            let exit_code =
+                match wait_with_heartbeat(&mut child, timeout_duration, client, &sprint_id_owned)
                     .await
                 {
-                    tracing::error!(error = %e, "Failed to close epic in DB");
-                }
-                break;
-            }
-            1 => {
-                // Sprint completed — more work needed for epic mission.
-                // The judge has already transitioned stories in run_sprint.rs:
-                //   - stories_completed → "done"
-                //   - stories_to_regroom → ACs/tasks cleared for re-planning
-                //   - delta_stories → new stories in backlog
-                // We do NOT blindly reset stories. Incomplete stories stay in_progress
-                // and get re-assigned to the next sprint with their existing context.
-                eprintln!(
-                    "{}",
-                    "Sprint completed — more work needed. Preparing next sprint...".yellow()
-                );
+                    Ok(status) => status.code().unwrap_or(-1),
+                    Err(_) => {
+                        eprintln!(
+                            "{} Sprint timed out after {} minutes — killing PID {}",
+                            "[timeout]".red().bold(),
+                            timeout_mins,
+                            child_pid,
+                        );
+                        // Kill the child process tree (cross-platform)
+                        kill_process_tree(child_pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        -1 // Treated as unexpected exit → sprint cancelled
+                    }
+                };
 
-                // 1. Transition remaining in_progress stories to "ready" so they're
-                // eligible for next sprint assignment. This preserves their ACs, tasks,
-                // and all context — it just makes them available for the next sprint picker.
-                let readied = ready_incomplete_stories(client, &epic.code).await;
-                if readied > 0 {
-                    eprintln!(
-                        "{} {} incomplete stories available for next sprint",
-                        "[backlog]".dimmed(),
-                        readied,
-                    );
-                }
+            tracing::info!(exit_code, "Sprint-run process exited");
 
-                // 2. Check if all stories are done — if so, close the epic
-                //    even if judge said intent_satisfied=false (deploy issue != code issue)
-                let (has_workable, all_done) = check_story_status(client, &epic.code).await;
-                if all_done {
+            match exit_code {
+                0 => {
+                    // Intent satisfied — close epic
+                    consecutive_failures = 0;
                     eprintln!(
-                        "All stories {} — closing epic despite judge not marking intent satisfied",
-                        "done".green().bold()
+                        "{} — closing epic {}",
+                        "Intent satisfied".green().bold(),
+                        epic.code
                     );
                     if let Err(e) = client
                         .patch::<_, serde_json::Value>(
                             &format!("/v1/epics/{}", epic.id),
-                            &json!({ "status": "done" }),
+                            &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
                         )
                         .await
                     {
-                        eprintln!("Failed to close epic: {}", e);
+                        tracing::error!(error = %e, "Failed to close epic in DB");
                     }
-                    break;
+                    should_break = true;
+                    break; // break retry loop
                 }
-                if !has_workable {
+                1 => {
+                    // Exit code 1 can mean either:
+                    // a) Sprint completed normally — more work needed (run_sprint exits 1)
+                    // b) Sprint crashed (run_sprint crash handler exits 1)
+                    // Distinguish by checking sprint status in DB.
+                    let is_crash = match client
+                        .get::<serde_json::Value>(&format!("/v1/er_sprints/{}", sprint_id_owned))
+                        .await
+                    {
+                        Ok(sprint_data) => sprint_data["status"].as_str() == Some("cancelled"),
+                        Err(_) => false, // assume normal on API error
+                    };
+
+                    if is_crash {
+                        // Crashed sprint — candidate for retry
+                        if consecutive_failures < args.max_retries {
+                            consecutive_failures += 1;
+                            emit_retry_event(
+                                client,
+                                &sprint_id_owned,
+                                sprint_num,
+                                exit_code,
+                                consecutive_failures,
+                                args.max_retries,
+                            )
+                            .await;
+                            backoff_sleep(consecutive_failures - 1).await;
+                            continue; // retry same sprint
+                        }
+                        // Exhausted retries — fall through to mark cancelled
+                        tracing::warn!(
+                            exit_code,
+                            consecutive_failures,
+                            "Sprint crashed — retries exhausted, marking cancelled"
+                        );
+                        if let Err(e) = client
+                            .patch::<_, serde_json::Value>(
+                                &format!("/v1/er_sprints/{}", sprint_id_owned),
+                                &json!({
+                                    "status": "cancelled",
+                                    "finished_at": chrono::Utc::now().to_rfc3339(),
+                                }),
+                            )
+                            .await
+                        {
+                            tracing::error!(error = %e, "Failed to mark crashed sprint as cancelled");
+                        }
+                        consecutive_failures = 0;
+                        break; // break retry loop, continue to next sprint
+                    }
+
+                    // Normal completion — more work needed for epic mission.
+                    consecutive_failures = 0;
+                    // The judge has already transitioned stories in run_sprint.rs:
+                    //   - stories_completed → "done"
+                    //   - stories_to_regroom → ACs/tasks cleared for re-planning
+                    //   - delta_stories → new stories in backlog
+                    // We do NOT blindly reset stories. Incomplete stories stay in_progress
+                    // and get re-assigned to the next sprint with their existing context.
                     eprintln!(
-                        "All remaining stories are {} — blocking epic",
-                        "blocked".red().bold()
+                        "{}",
+                        "Sprint completed — more work needed. Preparing next sprint...".yellow()
+                    );
+
+                    // 1. Transition remaining in_progress stories to "ready" so they're
+                    // eligible for next sprint assignment. This preserves their ACs, tasks,
+                    // and all context — it just makes them available for the next sprint picker.
+                    let readied = ready_incomplete_stories(client, &epic.code).await;
+                    if readied > 0 {
+                        eprintln!(
+                            "{} {} incomplete stories available for next sprint",
+                            "[backlog]".dimmed(),
+                            readied,
+                        );
+                    }
+
+                    // 2. Check if all stories are done — if so, close the epic
+                    //    even if judge said intent_satisfied=false (deploy issue != code issue)
+                    let (has_workable, all_done) = check_story_status(client, &epic.code).await;
+                    if all_done {
+                        eprintln!(
+                            "All stories {} — closing epic despite judge not marking intent satisfied",
+                            "done".green().bold()
+                        );
+                        if let Err(e) = client
+                            .patch::<_, serde_json::Value>(
+                                &format!("/v1/epics/{}", epic.id),
+                                &json!({ "status": "done" }),
+                            )
+                            .await
+                        {
+                            eprintln!("Failed to close epic: {}", e);
+                        }
+                        should_break = true;
+                        break; // break retry loop
+                    }
+                    if !has_workable {
+                        eprintln!(
+                            "All remaining stories are {} — blocking epic",
+                            "blocked".red().bold()
+                        );
+                        if let Err(e) = client
+                            .patch::<_, serde_json::Value>(
+                                &format!("/v1/epics/{}", epic.id),
+                                &json!({ "status": "blocked" }),
+                            )
+                            .await
+                        {
+                            tracing::error!(error = %e, "Failed to mark epic as blocked");
+                        }
+                        should_break = true;
+                        break; // break retry loop
+                    }
+
+                    // 3. SM inter-sprint adaptation: analyze ceremony history, patch flow for next sprint
+                    adapt_ceremony_flow(client, &epic.code, sprint_num).await;
+                    break; // break retry loop, continue to next sprint
+                }
+                2 => {
+                    // Blocked — impediment raised (not transient, no retry)
+                    eprintln!(
+                        "Epic {} is {} by impediment",
+                        epic.code,
+                        "BLOCKED".red().bold()
                     );
                     if let Err(e) = client
                         .patch::<_, serde_json::Value>(
@@ -496,57 +584,98 @@ pub async fn run(
                         )
                         .await
                     {
-                        tracing::error!(error = %e, "Failed to mark epic as blocked");
+                        tracing::error!(error = %e, "Failed to mark epic as blocked in DB");
                     }
-                    break;
+                    should_break = true;
+                    break; // break retry loop
                 }
+                _ => {
+                    // Unexpected exit (crash, context exhaustion, SIGKILL) — candidate for retry
+                    if consecutive_failures < args.max_retries {
+                        consecutive_failures += 1;
+                        emit_retry_event(
+                            client,
+                            &sprint_id_owned,
+                            sprint_num,
+                            exit_code,
+                            consecutive_failures,
+                            args.max_retries,
+                        )
+                        .await;
+                        backoff_sleep(consecutive_failures - 1).await;
+                        continue; // retry same sprint
+                    }
+                    // Exhausted retries
+                    tracing::warn!(
+                        exit_code,
+                        consecutive_failures,
+                        "Sprint process died unexpectedly — retries exhausted, marking cancelled"
+                    );
+                    if let Err(e) = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/er_sprints/{}", sprint_id_owned),
+                            &json!({
+                                "status": "cancelled",
+                                "finished_at": chrono::Utc::now().to_rfc3339(),
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::error!(error = %e, "Failed to mark crashed sprint as cancelled");
+                    }
+                    consecutive_failures = 0;
+                    break; // break retry loop, continue to next sprint
+                }
+            }
+        } // end retry loop
 
-                // 3. SM inter-sprint adaptation: analyze ceremony history, patch flow for next sprint
-                adapt_ceremony_flow(client, &epic.code, sprint_num).await;
-            }
-            2 => {
-                // Blocked — impediment raised
-                eprintln!(
-                    "Epic {} is {} by impediment",
-                    epic.code,
-                    "BLOCKED".red().bold()
-                );
-                if let Err(e) = client
-                    .patch::<_, serde_json::Value>(
-                        &format!("/v1/epics/{}", epic.id),
-                        &json!({ "status": "blocked" }),
-                    )
-                    .await
-                {
-                    tracing::error!(error = %e, "Failed to mark epic as blocked in DB");
-                }
-                break;
-            }
-            _ => {
-                // Unexpected exit (crash, context exhaustion, SIGKILL)
-                tracing::warn!(
-                    exit_code,
-                    "Sprint process died unexpectedly — marking sprint cancelled, continuing"
-                );
-                // Mark this sprint as cancelled (externally interrupted, not failed)
-                if let Err(e) = client
-                    .patch::<_, serde_json::Value>(
-                        &format!("/v1/er_sprints/{sprint_id}"),
-                        &json!({
-                            "status": "cancelled",
-                            "finished_at": chrono::Utc::now().to_rfc3339(),
-                        }),
-                    )
-                    .await
-                {
-                    tracing::error!(error = %e, "Failed to mark crashed sprint as cancelled");
-                }
-            }
+        if should_break {
+            break; // break sprint loop
         }
     }
 
     eprintln!("\nEpic runner finished for {}", epic.code);
     Ok(())
+}
+
+/// Exponential backoff sleep for transient sprint failures.
+/// Base delay 30s, doubles each attempt, capped at 300s.
+async fn backoff_sleep(attempt: u32) {
+    let delay = std::cmp::min(30 * 2u64.pow(attempt), 300);
+    eprintln!(
+        "{} Waiting {}s before retry (attempt {})...",
+        "[retry]".yellow().bold(),
+        delay,
+        attempt + 1,
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+}
+
+/// Emit a ceremony_event for retry observability.
+async fn emit_retry_event(
+    client: &ApiClient,
+    sprint_id: &str,
+    sprint_num: i32,
+    exit_code: i32,
+    consecutive_failures: u32,
+    max_retries: u32,
+) {
+    let retry_event = json!({
+        "sprint_id": sprint_id,
+        "event_type": "retry",
+        "node_key": serde_json::Value::Null,
+        "summary": format!(
+            "Retrying sprint {} (attempt {}/{})",
+            sprint_num, consecutive_failures, max_retries
+        ),
+        "detail": json!({
+            "exit_code": exit_code,
+            "retry_attempt": consecutive_failures,
+        }),
+    });
+    let _ = client
+        .post::<_, serde_json::Value>("/v1/ceremony_events", &retry_event)
+        .await;
 }
 
 /// Read the previous sprint's next_sprint_goal from the DB.
