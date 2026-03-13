@@ -31,7 +31,8 @@ For EACH story, evaluate:
 2. Check each `criterion` — is it satisfied by the code changes?
 3. Verify each task was addressed (check the `file` paths in git diff)
 4. If a story's ACs are met and tests pass → include its code in `stories_completed`
-5. If a story needs re-planning (plan was wrong, scope changed) → include in `stories_to_regroom`
+5. If a story is incomplete → add to `story_updates` with new tasks and reason
+6. **ONLY if the plan was FUNDAMENTALLY wrong** (wrong approach, impossible design) → include in `stories_to_regroom`. This REJECTS the story and creates a new one. Use sparingly — most incomplete stories just need more tasks, not rejection.
 
 ## Product Definition of Done
 
@@ -59,6 +60,19 @@ Execute ALL of these steps:
 - `intent_satisfied: true` — ALL stories completed AND epic intent is met
 - `stories_completed` — list of story CODES that passed all ACs
 - `stories_to_regroom` — stories where the plan was wrong and need re-planning
+- `story_updates` — for incomplete stories: add NEW tasks, update existing ACs, provide specific reasons
+
+## Incomplete Story Handling
+
+**You don't just flag incomplete stories — you tell them what's missing.**
+
+For each story that is NOT in `stories_completed`:
+1. Explain WHY it's incomplete (which ACs failed, which tasks weren't done)
+2. Add `story_updates` entries with:
+   - New tasks to complete the remaining work
+   - Updated ACs if the original criteria were wrong
+   - `blocked_reason` if the story is blocked by an external dependency
+3. Only use `stories_to_regroom` if the PLAN was fundamentally wrong (not just incomplete execution)
 
 ## Rules
 
@@ -66,6 +80,7 @@ Execute ALL of these steps:
 - Be specific — cite file paths and line numbers for every issue.
 - Minor style issues are NOT blockers. Focus on correctness and safety.
 - A story is "complete" ONLY if its ACs are verifiably satisfied.
+- Incomplete ≠ regroom. A story that's 60% done just needs more tasks, not re-planning.
 
 ## Output Format
 
@@ -75,7 +90,19 @@ Output ONLY valid JSON:
 {
   "mission_progress": 75,
   "stories_completed": ["ER-042", "ER-043"],
-  "stories_to_regroom": ["ER-044"],
+  "stories_to_regroom": [],
+  "story_updates": [
+    {
+      "code": "ER-044",
+      "reason": "2 of 4 tasks completed. AC 'validates input schema' not verified — no test exists.",
+      "new_tasks": [
+        {"description": "Add input validation test for schema endpoint", "persona": "backend-engineer"},
+        {"description": "Fix edge case in nullable field handling", "persona": "backend-engineer"}
+      ],
+      "blocked": false,
+      "blocked_reason": null
+    }
+  ],
   "delta_stories": [{"title": "New thing discovered", "description": "...", "size": "s"}],
   "action_items": [{"description": "Follow-up: refactor widget types to use enum dispatch", "source_story": "ER-042", "status": "open", "created_from": "judge"}],
   "changed_files": ["src/handlers/widgets.rs", "src/types.rs", "tests/widget_validation.rs"],
@@ -84,8 +111,8 @@ Output ONLY valid JSON:
   "build_passes": true,
   "tests_pass": true,
   "issues": [],
-  "summary": "2 of 3 stories completed. ER-044 needs re-grooming.",
-  "next_sprint_goal": "Complete ER-044 (re-groomed) and add integration tests for the widget system"
+  "summary": "2 of 3 stories completed. ER-044 needs 2 more tasks.",
+  "next_sprint_goal": "Complete ER-044 validation tasks and add integration tests for the widget system"
 }
 ```
 

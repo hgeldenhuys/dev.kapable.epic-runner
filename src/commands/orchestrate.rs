@@ -390,24 +390,48 @@ pub async fn run(
                 break;
             }
             1 => {
-                // Sprint completed — more work needed for epic mission
+                // Sprint completed — more work needed for epic mission.
+                // The judge has already transitioned stories in run_sprint.rs:
+                //   - stories_completed → "done"
+                //   - stories_to_regroom → ACs/tasks cleared for re-planning
+                //   - delta_stories → new stories in backlog
+                // We do NOT blindly reset stories. Incomplete stories stay in_progress
+                // and get re-assigned to the next sprint with their existing context.
                 eprintln!(
                     "{}",
                     "Sprint completed — more work needed. Preparing next sprint...".yellow()
                 );
 
-                // 1. Reset incomplete stories back to ready so they're eligible for next sprint
-                let reset_count = reset_failed_stories(client, &epic.code, sprint_num).await;
-                if reset_count > 0 {
+                // 1. Transition remaining in_progress stories to "ready" so they're
+                // eligible for next sprint assignment. This preserves their ACs, tasks,
+                // and all context — it just makes them available for the next sprint picker.
+                let readied = ready_incomplete_stories(client, &epic.code).await;
+                if readied > 0 {
                     eprintln!(
-                        "{} Reset {} incomplete stories back to ready",
+                        "{} {} incomplete stories available for next sprint",
                         "[backlog]".dimmed(),
-                        reset_count,
+                        readied,
                     );
                 }
 
-                // 2. Re-groom: use retro learnings to split/adjust stories for next sprint
-                regroom_stories(client, &epic, sprint_num).await;
+                // 2. Check if only blocked stories remain — if so, block the epic
+                let has_workable = has_workable_stories(client, &epic.code).await;
+                if !has_workable {
+                    eprintln!(
+                        "All remaining stories are {} — blocking epic",
+                        "blocked".red().bold()
+                    );
+                    if let Err(e) = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/epics/{}", epic.id),
+                            &json!({ "status": "blocked" }),
+                        )
+                        .await
+                    {
+                        tracing::error!(error = %e, "Failed to mark epic as blocked");
+                    }
+                    break;
+                }
 
                 // 3. SM inter-sprint adaptation: analyze ceremony history, patch flow for next sprint
                 adapt_ceremony_flow(client, &epic.code, sprint_num).await;
@@ -478,27 +502,29 @@ async fn read_previous_sprint_goal(
         .map(String::from)
 }
 
-/// Reset incomplete stories from a finished sprint back to "ready" so the next sprint
-/// can pick them up. Stories that have been attempted 3+ times get marked "blocked" instead.
-async fn reset_failed_stories(client: &ApiClient, epic_code: &str, _sprint_num: i32) -> usize {
+/// Transition incomplete stories (in_progress/planned) back to "ready" so the next
+/// sprint can pick them up. Unlike the old `reset_failed_stories`, this preserves all
+/// story context (ACs, tasks, changed_files) — it only changes the status field.
+/// The judge has already handled story-level decisions (done, regroom, blocked) in run_sprint.rs.
+async fn ready_incomplete_stories(client: &ApiClient, epic_code: &str) -> usize {
     let all_stories: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
         .get_with_params("/v1/stories", &[("epic_code", epic_code)])
         .await;
     let stories = match all_stories {
         Ok(d) => d.data,
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to load stories for reset");
+            tracing::warn!(error = %e, "Failed to load stories for ready transition");
             return 0;
         }
     };
 
-    let mut reset_count = 0;
+    let mut count = 0;
     for story in &stories {
         if story["epic_code"].as_str() != Some(epic_code) {
             continue;
         }
         let status = story["status"].as_str().unwrap_or("");
-        // Reset in_progress and planned stories (they didn't complete)
+        // Only transition in_progress/planned — leave done, blocked, draft alone
         if status != "in_progress" && status != "planned" {
             continue;
         }
@@ -507,237 +533,38 @@ async fn reset_failed_stories(client: &ApiClient, epic_code: &str, _sprint_num: 
             None => continue,
         };
 
-        // Check attempt count — if tried 3+ times, mark as blocked
-        let attempt_count = story["attempt_count"].as_i64().unwrap_or(0) + 1;
-        let (new_status, new_count) = if attempt_count >= 3 {
-            ("blocked", attempt_count)
-        } else {
-            ("ready", attempt_count)
-        };
-
         if let Err(e) = client
             .patch::<_, serde_json::Value>(
                 &format!("/v1/stories/{story_id}"),
-                &json!({
-                    "status": new_status,
-                    "attempt_count": new_count,
-                }),
+                &json!({ "status": "ready" }),
             )
             .await
         {
-            tracing::warn!(error = %e, story_id, "Failed to reset story status");
+            tracing::warn!(error = %e, story_id, "Failed to transition story to ready");
         } else {
-            if new_status == "blocked" {
-                eprintln!(
-                    "{} Story {} auto-blocked after {} failed attempts",
-                    "[re-groom]".dimmed(),
-                    story["code"].as_str().unwrap_or(story_id).yellow(),
-                    attempt_count,
-                );
-            }
-            reset_count += 1;
+            count += 1;
         }
     }
 
-    reset_count
+    count
 }
 
-/// Re-groom stories using retro learnings from the failed sprint.
-/// Calls Claude headless with Sonnet to analyze what went wrong and adjust stories:
-/// - Split overly large stories
-/// - Add missing prerequisite stories
-/// - Adjust ACs based on friction points discovered during execution
-async fn regroom_stories(client: &ApiClient, epic: &Epic, sprint_num: i32) {
-    // Load retro from the last sprint
-    let retro = load_retro_for_sprint(client, &epic.code, sprint_num).await;
-    let retro_context = match retro {
-        Some(r) => {
-            let mut parts = Vec::new();
-            if !r.friction_points.is_empty() {
-                parts.push(format!("Friction points: {}", r.friction_points.join("; ")));
-            }
-            if !r.action_items.is_empty() {
-                parts.push(format!("Action items: {}", r.action_items.join("; ")));
-            }
-            if parts.is_empty() {
-                tracing::debug!("Retro has no friction points or action items — skipping re-groom");
-                return;
-            }
-            parts.join("\n")
-        }
-        None => {
-            tracing::debug!(
-                "No retro available for sprint {} — skipping re-groom",
-                sprint_num
-            );
-            return;
-        }
+/// Check if the epic has any workable stories (ready/draft/planned — not just blocked).
+/// When only blocked stories remain, the epic itself should be blocked.
+async fn has_workable_stories(client: &ApiClient, epic_code: &str) -> bool {
+    let all_stories: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params("/v1/stories", &[("epic_code", epic_code)])
+        .await;
+    let stories = match all_stories {
+        Ok(d) => d.data,
+        Err(_) => return true, // assume workable on error
     };
 
-    // Load current ready stories for context (try server-side filter)
-    let all_stories: DataWrapper<Vec<serde_json::Value>> = match client
-        .get_with_params("/v1/stories", &[("epic_code", epic.code.as_str())])
-        .await
-    {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let epic_stories: Vec<&serde_json::Value> = all_stories
-        .data
-        .iter()
-        .filter(|s| {
-            s["epic_code"].as_str() == Some(epic.code.as_str())
-                && matches!(s["status"].as_str(), Some("ready" | "planned" | "draft"))
-        })
-        .collect();
-
-    if epic_stories.is_empty() {
-        tracing::debug!("No eligible stories to re-groom — skipping");
-        return;
-    }
-
-    let stories_json = serde_json::to_string_pretty(&epic_stories).unwrap_or_default();
-
-    // Build re-groom prompt
-    let prompt = format!(
-        r#"You are re-grooming stories for epic {} after sprint {} failed.
-
-Epic intent: {}
-
-Sprint {} retro findings:
-{}
-
-Current stories (JSON):
-{}
-
-INSTRUCTIONS:
-1. Analyze what went wrong based on the retro findings
-2. If a story is too large (>5 points), split it into smaller stories
-3. If a prerequisite is missing (e.g., env config, dependency), create a new story for it
-4. Adjust acceptance criteria based on lessons learned
-5. Output ONLY valid JSON array of story objects, each with:
-   {{"id": "existing-id-or-null", "title": "...", "acceptance_criteria": ["AC1", "AC2"], "points": N, "status": "ready"}}
-   - Use the existing ID for modified stories, null for new ones
-   - Keep stories small (1-5 points)
-   - Be specific about file paths and commands in ACs"#,
-        epic.code, sprint_num, epic.intent, sprint_num, retro_context, stories_json,
-    );
-
-    // Spawn Claude headless (Sonnet, low budget — this is grooming, not execution)
-    let session_id = uuid::Uuid::new_v4();
-    let mut cmd = tokio::process::Command::new("claude");
-    cmd.arg("--print")
-        .arg("--output-format")
-        .arg("text")
-        .arg("--model")
-        .arg("sonnet")
-        .arg("--max-turns")
-        .arg("3")
-        .arg("--dangerously-skip-permissions")
-        .arg("--session-id")
-        .arg(session_id.to_string())
-        .arg("--prompt")
-        .arg(&prompt);
-
-    // Limit tools — re-groom is analysis-only
-    cmd.arg("--allowedTools")
-        .arg("Read,Glob,Grep,Bash(git *),Bash(ls *)");
-
-    eprintln!(
-        "{} Re-grooming {} stories with retro context from sprint {}...",
-        "[re-groom]".dimmed(),
-        epic_stories.len(),
-        sprint_num,
-    );
-
-    let output = match cmd.output().await {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!(error = %e, "Re-groom Claude process failed — skipping");
-            return;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse the JSON output — look for a JSON array in the response
-    let json_start = stdout.find('[');
-    let json_end = stdout.rfind(']');
-    let regroom_result: Option<Vec<serde_json::Value>> = match (json_start, json_end) {
-        (Some(start), Some(end)) if end > start => serde_json::from_str(&stdout[start..=end]).ok(),
-        _ => None,
-    };
-
-    let stories = match regroom_result {
-        Some(s) if !s.is_empty() => s,
-        _ => {
-            tracing::warn!("Re-groom produced no valid JSON output — skipping");
-            return;
-        }
-    };
-
-    // Apply re-groomed stories: update existing, create new
-    let mut updated = 0;
-    let mut created = 0;
-    for story in &stories {
-        let story_id = story["id"]
-            .as_str()
-            .filter(|s| !s.is_empty() && *s != "null");
-        let title = story["title"].as_str().unwrap_or("Untitled");
-
-        if let Some(id) = story_id {
-            // Update existing story
-            let patch = json!({
-                "title": title,
-                "acceptance_criteria": story["acceptance_criteria"],
-                "points": story["points"],
-                "status": "ready",
-            });
-            if client
-                .patch::<_, serde_json::Value>(&format!("/v1/stories/{id}"), &patch)
-                .await
-                .is_ok()
-            {
-                updated += 1;
-            }
-        } else {
-            // Create new story (prerequisite discovered by re-groom)
-            let code =
-                match super::backlog::next_story_code(client, &epic.product_id.to_string()).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("Failed to generate story code: {e}");
-                        continue;
-                    }
-                };
-            let body = json!({
-                "product_id": epic.product_id.to_string(),
-                "epic_code": epic.code,
-                "code": code,
-                "title": title,
-                "acceptance_criteria": story["acceptance_criteria"],
-                "points": story["points"].as_i64().unwrap_or(2),
-                "status": "ready",
-                "attempt_count": 0,
-            });
-            if client
-                .post::<_, serde_json::Value>("/v1/stories", &body)
-                .await
-                .is_ok()
-            {
-                created += 1;
-            }
-        }
-    }
-
-    if updated > 0 || created > 0 {
-        eprintln!(
-            "{} Re-groomed: {} updated, {} new stories created",
-            "[re-groom]".dimmed(),
-            updated.to_string().green(),
-            created.to_string().cyan(),
-        );
-    }
+    stories.iter().any(|s| {
+        let status = s["status"].as_str().unwrap_or("");
+        s["epic_code"].as_str() == Some(epic_code)
+            && matches!(status, "ready" | "draft" | "planned" | "in_progress")
+    })
 }
 
 /// Analyze ceremony results across sprints and patch the flow YAML for the next sprint.

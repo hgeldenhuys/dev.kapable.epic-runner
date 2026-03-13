@@ -394,7 +394,7 @@ pub async fn execute_flow(
         .unwrap_or(0);
     let stories_completed_count = ordered
         .iter()
-        .find(|r| r.key == "judge")
+        .find(|r| r.key == "judge_code" || r.key == "judge")
         .and_then(|r| r.judge_verdict.as_ref())
         .and_then(|v| v.stories_completed.as_ref())
         .map(|sc| sc.len())
@@ -472,6 +472,52 @@ async fn execute_node(
         }),
 
         CeremonyNodeType::Harness | CeremonyNodeType::Agent => {
+            // ── Conditional skip: research + groom when all stories already have ACs ──
+            // Stories that were groomed in a previous sprint already have acceptance_criteria
+            // and tasks. No need to spin up an expensive Claude session just to echo them back.
+            if (node.key == "research" || node.key == "groom") && !node.config.resume_stories {
+                let stories = ctx.stories.as_array().cloned().unwrap_or_default();
+                let all_have_acs = !stories.is_empty()
+                    && stories.iter().all(|s| {
+                        s.get("acceptance_criteria")
+                            .and_then(|v| v.as_array())
+                            .map(|a| !a.is_empty())
+                            .unwrap_or(false)
+                    });
+                if all_have_acs {
+                    tracing::info!(
+                        node = %node.key,
+                        stories = stories.len(),
+                        "All stories already groomed — skipping {}",
+                        node.key
+                    );
+                    sink.emit(SprintEvent {
+                        sprint_id: ctx.sprint.session_id,
+                        event_type: SprintEventType::NodeCompleted,
+                        node_id: Some(node.key.clone()),
+                        node_label: Some(node.label.clone()),
+                        summary: format!("{} → Skipped (all stories already groomed)", &node.label),
+                        detail: Some(serde_json::json!({
+                            "node_key": node.key,
+                            "status": "Skipped",
+                            "reason": "all_stories_have_acceptance_criteria",
+                        })),
+                        timestamp: chrono::Utc::now(),
+                    });
+                    return Ok(NodeResult {
+                        key: node.key.clone(),
+                        status: CeremonyStatus::Completed,
+                        output: Some("Skipped — all stories already groomed".to_string()),
+                        cost_usd: Some(0.0),
+                        impediment_raised: false,
+                        judge_verdict: None,
+                        supervisor_decisions: vec![],
+                        rubber_duck_sessions: vec![],
+                        builder_output: None,
+                    });
+                }
+            }
+
             if node.config.resume_stories {
                 // ── Per-story resume (retro interview) ────────────────
                 // Resume each story's builder session with a different agent
@@ -637,6 +683,19 @@ async fn execute_node(
                 // Enables: stop hooks per story, --resume for retro, file tracking, context isolation.
                 let stories = ctx.stories.as_array().cloned().unwrap_or_default();
 
+                // Cache story UUIDs locally so the stop hook can do a fast lookup
+                // to determine if a session is a story session.
+                let stories_cache_path =
+                    std::path::Path::new(&ctx.repo_path).join(".epic-runner/stories/uuids.cache");
+                let _ = std::fs::create_dir_all(stories_cache_path.parent().unwrap());
+                {
+                    let uuids: Vec<&str> = stories
+                        .iter()
+                        .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+                        .collect();
+                    let _ = std::fs::write(&stories_cache_path, uuids.join("\n"));
+                }
+
                 let mut all_decisions = Vec::new();
                 let mut all_rubber_ducks = Vec::new();
                 let mut all_builder_stories = Vec::new();
@@ -697,6 +756,10 @@ async fn execute_node(
                         (
                             "EPIC_RUNNER_CHANGED_FILES".to_string(),
                             changed_files_path.clone(),
+                        ),
+                        (
+                            "EPIC_RUNNER_STORIES_CACHE".to_string(),
+                            stories_cache_path.to_string_lossy().to_string(),
                         ),
                     ];
 

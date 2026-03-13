@@ -9,10 +9,21 @@ pub fn parse_verdict(text: Option<&str>) -> Option<JudgeVerdict> {
     serde_json::from_value::<JudgeVerdict>(value).ok()
 }
 
-/// Evaluate intent satisfaction: requires both intent_satisfied AND confidence >= 0.7
+/// Evaluate intent satisfaction from judge verdict.
+/// The judge's `intent_satisfied` field is the primary signal.
+/// Falls back to mission_progress >= 100 if intent_satisfied is false but progress is complete.
 pub fn evaluate_verdict(verdict: &Option<JudgeVerdict>) -> bool {
     match verdict {
-        Some(v) => v.intent_satisfied && v.confidence >= 0.7,
+        Some(v) => {
+            if v.intent_satisfied {
+                return true;
+            }
+            // Fallback: if mission_progress is 100%, treat as satisfied
+            if let Some(progress) = v.mission_progress {
+                return progress >= 100.0;
+            }
+            false
+        }
         None => false,
     }
 }
@@ -50,31 +61,14 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_requires_both_satisfied_and_confidence() {
-        let low_confidence = JudgeVerdict {
-            intent_satisfied: true,
-            confidence: 0.5,
-            criteria_results: vec![],
-            summary: "ok".to_string(),
-            evidence: vec![],
-            mission_progress: None,
-            deploy_ready: None,
-            delta_stories: None,
-            stories_completed: None,
-            stories_to_regroom: None,
-            action_items: None,
-            changed_files: None,
-            next_sprint_goal: None,
-        };
-        assert!(!evaluate_verdict(&Some(low_confidence)));
-
+    fn evaluate_uses_intent_satisfied() {
         let not_satisfied = JudgeVerdict {
             intent_satisfied: false,
-            confidence: 0.9,
+            confidence: 0.0,
             criteria_results: vec![],
             summary: "no".to_string(),
             evidence: vec![],
-            mission_progress: None,
+            mission_progress: Some(50.0),
             deploy_ready: None,
             delta_stories: None,
             stories_completed: None,
@@ -82,16 +76,17 @@ mod tests {
             action_items: None,
             changed_files: None,
             next_sprint_goal: None,
+            story_updates: None,
         };
         assert!(!evaluate_verdict(&Some(not_satisfied)));
 
-        let good = JudgeVerdict {
+        let satisfied = JudgeVerdict {
             intent_satisfied: true,
-            confidence: 0.8,
+            confidence: 0.0,
             criteria_results: vec![],
             summary: "yes".to_string(),
             evidence: vec![],
-            mission_progress: None,
+            mission_progress: Some(100.0),
             deploy_ready: None,
             delta_stories: None,
             stories_completed: None,
@@ -99,8 +94,31 @@ mod tests {
             action_items: None,
             changed_files: None,
             next_sprint_goal: None,
+            story_updates: None,
         };
-        assert!(evaluate_verdict(&Some(good)));
+        assert!(evaluate_verdict(&Some(satisfied)));
+    }
+
+    #[test]
+    fn evaluate_falls_back_to_mission_progress() {
+        // intent_satisfied is false but mission_progress is 100 → satisfied
+        let full_progress = JudgeVerdict {
+            intent_satisfied: false,
+            confidence: 0.0,
+            criteria_results: vec![],
+            summary: "done via progress".to_string(),
+            evidence: vec![],
+            mission_progress: Some(100.0),
+            deploy_ready: None,
+            delta_stories: None,
+            stories_completed: None,
+            stories_to_regroom: None,
+            action_items: None,
+            changed_files: None,
+            next_sprint_goal: None,
+            story_updates: None,
+        };
+        assert!(evaluate_verdict(&Some(full_progress)));
     }
 
     #[test]

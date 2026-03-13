@@ -547,8 +547,11 @@ pub async fn run(
         }
     }
 
-    // 11e. Clear grooming fields for stories the judge flagged for re-grooming.
-    // This forces the next sprint's groomer to re-plan these stories.
+    // 11e. Handle stories the judge flagged for re-grooming.
+    // PRINCIPLE: Work done is NEVER wasted. We don't clear ACs/tasks.
+    // Instead: mark the original story as "rejected", preserve its commit,
+    // and create a NEW story with a fresh plan. The original serves as
+    // an audit trail of what was attempted and why it was rejected.
     if let Some(verdict) = &judge_verdict {
         if let Some(regroom_codes) = &verdict.stories_to_regroom {
             let story_list = sprint
@@ -557,39 +560,184 @@ pub async fn run(
                 .and_then(|s| s.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let mut cleared = 0usize;
+            let mut rejected = 0usize;
             for code in regroom_codes {
+                let story_data = story_list
+                    .iter()
+                    .find(|s| s.get("code").and_then(|c| c.as_str()) == Some(code.as_str()));
+                let story_val = match story_data {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let story_id = match story_val.get("id").and_then(|v| v.as_str()) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                let title = story_val
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Untitled");
+
+                // Mark original as rejected (preserves all work + audit trail)
+                if let Err(e) = client
+                    .patch::<_, serde_json::Value>(
+                        &format!("/v1/stories/{}", story_id),
+                        &json!({
+                            "status": "rejected",
+                            "log_entries": [{
+                                "source": "judge",
+                                "sprint": sprint.number,
+                                "message": format!("Rejected by judge — plan was fundamentally wrong. New story will be created for re-planning."),
+                                "timestamp": chrono::Utc::now().to_rfc3339(),
+                            }],
+                        }),
+                    )
+                    .await
+                {
+                    tracing::warn!(story_code = %code, error = %e, "Failed to reject story");
+                    continue;
+                }
+
+                // Create a new replacement story (draft — needs grooming)
+                let new_code = match super::backlog::next_story_code(
+                    client,
+                    &epic.product_id.to_string(),
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to generate new story code for regroom");
+                        continue;
+                    }
+                };
+                let body = json!({
+                    "product_id": epic.product_id.to_string(),
+                    "epic_code": epic.code,
+                    "code": new_code,
+                    "title": format!("[re-plan] {}", title),
+                    "description": format!("Re-plan of {} which was rejected because the original plan was fundamentally wrong.", code),
+                    "status": "draft",
+                    "intent": story_val.get("intent").cloned().unwrap_or(json!(null)),
+                    "persona": story_val.get("persona").cloned().unwrap_or(json!(null)),
+                });
+                if client
+                    .post::<_, serde_json::Value>("/v1/stories", &body)
+                    .await
+                    .is_ok()
+                {
+                    rejected += 1;
+                    eprintln!(
+                        "{} {} rejected → {} created for re-planning",
+                        "[regroom]".dimmed(),
+                        code.yellow(),
+                        new_code.cyan(),
+                    );
+                }
+            }
+            if rejected > 0 {
+                eprintln!(
+                    "{} {} stories rejected and replaced with new stories for re-planning",
+                    "[regroom]".dimmed(),
+                    rejected,
+                );
+            }
+        }
+    }
+
+    // 11f. Apply judge story_updates — add tasks, flag blockers, attach reasons
+    // to incomplete stories so the next sprint has specific guidance.
+    if let Some(verdict) = &judge_verdict {
+        if let Some(updates) = &verdict.story_updates {
+            let story_list = sprint
+                .stories
+                .as_ref()
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut updated_count = 0usize;
+            for update in updates {
                 let story_id = story_list.iter().find_map(|s| {
-                    if s.get("code").and_then(|c| c.as_str()) == Some(code.as_str()) {
+                    if s.get("code").and_then(|c| c.as_str()) == Some(update.code.as_str()) {
                         s.get("id").and_then(|id| id.as_str()).map(String::from)
                     } else {
                         None
                     }
                 });
                 if let Some(sid) = story_id {
-                    // Clear planning fields so next sprint re-plans this story
-                    if let Err(e) = client
-                        .patch::<_, serde_json::Value>(
-                            &format!("/v1/stories/{}", sid),
-                            &json!({
-                                "acceptance_criteria": null,
-                                "tasks": null,
-                                "planned_at": null,
-                            }),
-                        )
-                        .await
-                    {
-                        tracing::warn!(story_code = %code, error = %e, "Failed to clear grooming for re-groom");
-                    } else {
-                        cleared += 1;
+                    let mut patch = json!({});
+
+                    // Append new tasks from judge
+                    if let Some(new_tasks) = &update.new_tasks {
+                        // Load existing tasks, append new ones
+                        let existing = story_list
+                            .iter()
+                            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(&sid))
+                            .and_then(|s| s.get("tasks"))
+                            .and_then(|t| t.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut all_tasks: Vec<serde_json::Value> = existing;
+                        for task in new_tasks {
+                            all_tasks.push(json!({
+                                "description": task.description,
+                                "persona": task.persona,
+                                "done": false,
+                                "added_by": "judge",
+                            }));
+                        }
+                        patch["tasks"] = json!(all_tasks);
+                    }
+
+                    // Flag story as blocked if judge says so
+                    if update.blocked {
+                        patch["status"] = json!("blocked");
+                        if let Some(reason) = &update.blocked_reason {
+                            patch["blocked_reason"] = json!(reason);
+                        }
+                    }
+
+                    // Attach judge's reason as a log entry
+                    if let Some(reason) = &update.reason {
+                        // Add to log_entries array
+                        let existing_log = story_list
+                            .iter()
+                            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(&sid))
+                            .and_then(|s| s.get("log_entries"))
+                            .and_then(|l| l.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut logs = existing_log;
+                        logs.push(json!({
+                            "source": "judge",
+                            "sprint": sprint.number,
+                            "message": reason,
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                        }));
+                        patch["log_entries"] = json!(logs);
+                    }
+
+                    if patch.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                        if let Err(e) = client
+                            .patch::<_, serde_json::Value>(&format!("/v1/stories/{}", sid), &patch)
+                            .await
+                        {
+                            tracing::warn!(
+                                story_code = %update.code,
+                                error = %e,
+                                "Failed to apply judge story update"
+                            );
+                        } else {
+                            updated_count += 1;
+                        }
                     }
                 }
             }
-            if cleared > 0 {
+            if updated_count > 0 {
                 eprintln!(
-                    "{} Cleared grooming data for {} stories (judge requested re-groom)",
-                    "[regroom]".dimmed(),
-                    cleared
+                    "{} Applied judge updates to {} incomplete stories",
+                    "[judge]".dimmed(),
+                    updated_count
                 );
             }
         }

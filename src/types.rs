@@ -341,10 +341,17 @@ pub struct SuccessCriteria {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JudgeVerdict {
+    #[serde(default)]
     pub intent_satisfied: bool,
+    /// Legacy field — code-judge agent may not output this.
+    /// Defaults to 0.0; evaluate_verdict now uses mission_progress instead.
+    #[serde(default)]
     pub confidence: f64,
+    #[serde(default)]
     pub criteria_results: Vec<CriterionResult>,
+    #[serde(default)]
     pub summary: String,
+    #[serde(default)]
     pub evidence: Vec<String>,
     /// v3: Mission progress percentage (0-100)
     #[serde(default)]
@@ -373,6 +380,33 @@ pub struct JudgeVerdict {
     /// based on what was accomplished and what remains.
     #[serde(default)]
     pub next_sprint_goal: Option<String>,
+    /// v6: Per-story updates from the judge for incomplete stories.
+    /// Contains new tasks, blocked status, and reasons — applied back to stories
+    /// so the next sprint has specific guidance rather than a blind retry.
+    #[serde(default)]
+    pub story_updates: Option<Vec<JudgeStoryUpdate>>,
+}
+
+/// Judge's update for an incomplete story — adds tasks, flags blockers, explains why.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeStoryUpdate {
+    pub code: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub new_tasks: Option<Vec<JudgeNewTask>>,
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
+}
+
+/// A task added by the judge to an incomplete story.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeNewTask {
+    pub description: String,
+    #[serde(default)]
+    pub persona: Option<String>,
 }
 
 /// A story discovered by the judge during sprint evaluation, to be added back to the backlog.
