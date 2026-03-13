@@ -106,7 +106,7 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
         cmd.arg("--allowed-tools").arg(tools.join(","));
     }
     if let Some(sp) = &config.system_prompt {
-        cmd.arg("--system-prompt").arg(sp);
+        cmd.arg("--append-system-prompt").arg(sp);
     }
     cmd.arg(&config.prompt);
     cmd.current_dir(&config.repo_path);
