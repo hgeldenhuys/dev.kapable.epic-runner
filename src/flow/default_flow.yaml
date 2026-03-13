@@ -79,14 +79,14 @@ nodes:
         Project conventions (from CLAUDE.md):
         {{repo.claude_md}}
       prompt: |
-        Groom the backlog stories for epic {{epic.code}}.
-        Stories: {{stories}}
+        Stories to groom for epic {{epic.code}}:
+        {{stories}}
 
-        SKIP stories that already have acceptance_criteria populated — they were groomed in a previous sprint. Only re-groom if the judge explicitly requested it.
+        Research findings (if any): .epic-runner/research/{{epic.code}}/findings.md
 
-        Research findings are at .epic-runner/research/{{epic.code}}/findings.md — read that file for external context (libraries, best practices, prior art).
-
-        You are responsible for codebase exploration. Find relevant files, patterns, and line numbers for each story.
+        Instructions:
+        - SKIP stories that already have acceptance_criteria populated — they were groomed in a previous sprint. Only re-groom if the judge explicitly requested it.
+        - You are responsible for codebase exploration. Find relevant files, patterns, and line numbers for each story.
 
         For each story that NEEDS grooming:
         1. Explore the codebase — find specific files and line numbers for modification points
@@ -95,7 +95,7 @@ nodes:
         4. List dependencies between stories
         5. Define test plan (what command verifies it works)
 
-        Output ALL stories (groomed + already-groomed) as JSON array. For already-groomed stories, include their existing data unchanged. Each story object MUST include the original "id" field so results can be written back to the database.
+        Output ALL stories (groomed + already-groomed) as a single JSON array. No markdown fences, no preamble, no trailing text. Each story object MUST include the original "id" field so results can be written back to the database.
 
   - key: execute
     node_type: loop

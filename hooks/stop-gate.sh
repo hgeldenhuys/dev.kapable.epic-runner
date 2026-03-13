@@ -25,6 +25,14 @@ set -euo pipefail
 # Read Claude Code hook input from stdin (contains session context)
 INPUT=$(cat)
 
+# 0. Check if a previous stop hook already fired — prevent infinite loops.
+# When stop_hook_active is true, Claude is already in a continuation loop
+# from a prior blocked stop. Don't block again.
+STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null || echo "false")
+if [ "$STOP_ACTIVE" = "true" ]; then
+    exit 0
+fi
+
 # 1. Extract session ID from hook input
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
 if [ -z "$SESSION_ID" ]; then

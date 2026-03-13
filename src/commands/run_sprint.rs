@@ -915,10 +915,26 @@ async fn save_sprint_learnings(
     };
 
     // Parse retro JSON output — may contain multiple per-story JSON objects
-    // separated by markdown headers/dividers
-    let all_parsed = crate::json_extract::extract_all_json_objects(output);
+    // separated by markdown headers/dividers.
+    // Try primary output first, then fall back to searching all assistant texts.
+    let mut all_parsed = crate::json_extract::extract_all_json_objects(output);
     if all_parsed.is_empty() {
-        tracing::warn!("Could not extract JSON from retro output — skipping learnings save");
+        // Fallback: search all assistant text blocks for JSON objects
+        for text in retro_result.all_assistant_texts.iter().rev() {
+            let parsed = crate::json_extract::extract_all_json_objects(text);
+            if !parsed.is_empty() {
+                tracing::info!(
+                    block_len = text.len(),
+                    objects = parsed.len(),
+                    "Found retro JSON in assistant text block (fallback)"
+                );
+                all_parsed = parsed;
+                break;
+            }
+        }
+    }
+    if all_parsed.is_empty() {
+        tracing::warn!("Could not extract JSON from retro output or assistant texts — skipping learnings save");
         return;
     }
 
@@ -980,8 +996,19 @@ fn create_backlog_from_retro(
         None => return,
     };
 
-    // Parse multi-story retro output and merge discovered_work
-    let all_parsed = crate::json_extract::extract_all_json_objects(output);
+    // Parse multi-story retro output and merge discovered_work.
+    // Try primary output first, then fall back to all assistant texts.
+    let mut all_parsed = crate::json_extract::extract_all_json_objects(output);
+    if all_parsed.is_empty() {
+        for text in retro_result.all_assistant_texts.iter().rev() {
+            let parsed = crate::json_extract::extract_all_json_objects(text);
+            if !parsed.is_empty() {
+                tracing::info!("Found retro backlog JSON in assistant text block (fallback)");
+                all_parsed = parsed;
+                break;
+            }
+        }
+    }
     let mut discovered: Vec<serde_json::Value> = Vec::new();
     for parsed in &all_parsed {
         if let Some(arr) = parsed["discovered_work"].as_array() {

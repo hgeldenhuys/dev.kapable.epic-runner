@@ -110,6 +110,25 @@ pub struct NodeResult {
     pub all_assistant_texts: Vec<String>,
 }
 
+impl NodeResult {
+    /// Create a NodeResult with the given key and status, defaulting all other fields.
+    /// Use this instead of struct literal to avoid updating 17+ call sites when adding fields.
+    pub fn new(key: String, status: CeremonyStatus) -> Self {
+        Self {
+            key,
+            status,
+            output: None,
+            cost_usd: None,
+            impediment_raised: false,
+            judge_verdict: None,
+            supervisor_decisions: vec![],
+            rubber_duck_sessions: vec![],
+            builder_output: None,
+            all_assistant_texts: vec![],
+        }
+    }
+}
+
 /// Execute a ceremony flow using Kahn's topological sort with parallel level execution.
 ///
 /// Algorithm:
@@ -623,8 +642,18 @@ async fn execute_node(
                 // Parse judge verdict from the code judge node.
                 // The code judge produces the JudgeVerdict that drives story completion,
                 // sprint goal inheritance, and intent satisfaction.
+                // Try result_text first, then fall back to searching all assistant texts.
                 let verdict = if node.key == "judge_code" || node.key == "judge" {
                     crate::judge::parse_verdict(result.result_text.as_deref())
+                        .or_else(|| {
+                            for text in result.all_assistant_texts.iter().rev() {
+                                if let Some(v) = crate::judge::parse_verdict(Some(text)) {
+                                    tracing::info!("Found judge verdict in assistant text block (fallback)");
+                                    return Some(v);
+                                }
+                            }
+                            None
+                        })
                 } else {
                     None
                 };

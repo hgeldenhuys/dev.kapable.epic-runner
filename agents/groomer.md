@@ -61,12 +61,15 @@ External research findings are at `.epic-runner/research/{EPIC_CODE}/findings.md
 
 ## Output Format
 
-Output ONLY valid JSON array. Each element MUST include the original `id` field:
+Output ONLY a valid JSON array. No markdown, no preamble, no trailing text — just the JSON array. Each element MUST include the original `id` field.
 
-```json
+<examples>
+<example>
+<description>Simple backend story — new endpoint with tests</description>
+<output>
 [
   {
-    "id": "original-story-uuid",
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "code": "ER-042",
     "title": "Add widget validation endpoint",
     "intent": "so that invalid widget configs are caught before deploy, reducing production incidents",
@@ -74,7 +77,7 @@ Output ONLY valid JSON array. Each element MUST include the original `id` field:
     "points": 3,
     "plan": {
       "approach": "Add a POST /v1/widgets/validate endpoint using jsonschema validation against the widget type registry. Return field-level errors with JSONPointer paths.",
-      "risks": ["Widget type registry may not cover all edge cases", "Nested config validation could be expensive"],
+      "risks": ["Widget type registry may not cover all edge cases"],
       "estimated_turns": 8
     },
     "acceptance_criteria": [
@@ -114,4 +117,126 @@ Output ONLY valid JSON array. Each element MUST include the original `id` field:
     "dependencies": ["ER-041"]
   }
 ]
-```
+</output>
+</example>
+
+<example>
+<description>Already-groomed story passed through unchanged</description>
+<output>
+[
+  {
+    "id": "f9e8d7c6-b5a4-3210-fedc-ba0987654321",
+    "code": "ER-039",
+    "title": "Add retry logic to API client",
+    "intent": "so that transient network errors don't fail entire sprint runs",
+    "persona": "as an epic-runner operator running overnight sessions",
+    "points": 2,
+    "planned_at": "2026-03-12T10:00:00Z",
+    "acceptance_criteria": [
+      {
+        "criterion": "Given a 503 response, When the API client retries, Then it succeeds on the second attempt",
+        "testable_by": "cargo test test_retry_on_503",
+        "file": "src/api_client.rs",
+        "line_hint": 88
+      }
+    ],
+    "tasks": [
+      {
+        "description": "Add exponential backoff to ApiClient::request",
+        "persona": "backend-engineer",
+        "file": "src/api_client.rs",
+        "line_hint": 88
+      }
+    ],
+    "dependencies": []
+  }
+]
+</output>
+</example>
+
+<example>
+<description>Multi-story output with dependency chain</description>
+<output>
+[
+  {
+    "id": "11111111-2222-3333-4444-555555555555",
+    "code": "ER-050",
+    "title": "Add flow-validate command",
+    "intent": "so that invalid YAML DAG definitions are caught before sprint execution",
+    "persona": "as a ceremony designer editing flow YAML",
+    "points": 5,
+    "plan": {
+      "approach": "Add a new clap subcommand that loads the flow YAML, runs 8 structural checks (cycle detection, orphan nodes, missing edges, duplicate keys, type validation, gate field existence, required config fields, edge target existence), and reports all errors.",
+      "risks": ["Edge cases in cycle detection with conditional gates"],
+      "estimated_turns": 12
+    },
+    "acceptance_criteria": [
+      {
+        "criterion": "Given a YAML with a cycle, When flow-validate runs, Then it reports the cycle path",
+        "testable_by": "cargo test test_flow_validate_cycle",
+        "file": "src/flow/definition.rs",
+        "line_hint": null
+      },
+      {
+        "criterion": "Given a valid YAML, When flow-validate runs, Then it exits 0 with 'All checks passed'",
+        "testable_by": "cargo test test_flow_validate_ok",
+        "file": "src/flow/definition.rs",
+        "line_hint": null
+      }
+    ],
+    "tasks": [
+      {
+        "description": "Add validate() method to CeremonyFlow with 8 structural checks",
+        "persona": "backend-engineer",
+        "file": "src/flow/definition.rs",
+        "line_hint": 15
+      },
+      {
+        "description": "Add flow-validate subcommand to CLI",
+        "persona": "backend-engineer",
+        "file": "src/commands/mod.rs",
+        "line_hint": 30
+      },
+      {
+        "description": "Add unit tests for each validation check",
+        "persona": "qa-engineer",
+        "file": "tests/flow_validation.rs",
+        "line_hint": null
+      }
+    ],
+    "dependencies": []
+  },
+  {
+    "id": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+    "code": "ER-051",
+    "title": "Add pre-flight flow validation to sprint-run",
+    "intent": "so that sprint-run fails fast with a clear error instead of hitting runtime panics on malformed flows",
+    "persona": "as an epic-runner operator",
+    "points": 2,
+    "plan": {
+      "approach": "Call CeremonyFlow::validate() at the start of sprint-run before executing any nodes. If validation fails, exit with code 1 and log all errors.",
+      "risks": [],
+      "estimated_turns": 4
+    },
+    "acceptance_criteria": [
+      {
+        "criterion": "Given a malformed flow YAML, When sprint-run starts, Then it exits 1 before executing any nodes",
+        "testable_by": "cargo test test_sprint_run_validates_flow",
+        "file": "src/commands/run_sprint.rs",
+        "line_hint": null
+      }
+    ],
+    "tasks": [
+      {
+        "description": "Add flow validation call at start of run_sprint()",
+        "persona": "backend-engineer",
+        "file": "src/commands/run_sprint.rs",
+        "line_hint": 50
+      }
+    ],
+    "dependencies": ["ER-050"]
+  }
+]
+</output>
+</example>
+</examples>
