@@ -509,6 +509,7 @@ pub enum SprintStatus {
     Completed,
     Cancelled,
     Blocked,
+    Failed,
 }
 
 impl std::fmt::Display for SprintStatus {
@@ -524,6 +525,7 @@ impl std::fmt::Display for SprintStatus {
             SprintStatus::Completed => "completed",
             SprintStatus::Cancelled => "cancelled",
             SprintStatus::Blocked => "blocked",
+            SprintStatus::Failed => "failed",
         };
         write!(f, "{s}")
     }
