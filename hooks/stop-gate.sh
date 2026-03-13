@@ -85,12 +85,31 @@ if [ "$STATUS" = "blocked" ] && [ -n "$BLOCKED_REASON" ]; then
     exit 0
 fi
 
-# Check task completion
+# Check task and AC completion
 TASKS=$(jq -r '.tasks // []' "$STORY_FILE" 2>/dev/null || echo "[]")
 TOTAL=$(echo "$TASKS" | jq 'length')
 DONE=$(echo "$TASKS" | jq '[.[] | select(.done == true)] | length')
 
-# Allow stop if no tasks defined (story has no task breakdown)
+ACS=$(jq -r '.acceptance_criteria // []' "$STORY_FILE" 2>/dev/null || echo "[]")
+TOTAL_ACS=$(echo "$ACS" | jq 'length')
+
+# Block stop if BOTH tasks AND ACs are empty — story was never groomed
+if [ "$TOTAL" -eq 0 ] && [ "$TOTAL_ACS" -eq 0 ]; then
+    echo "" >&2
+    echo "═══ STOP BLOCKED: Story $STORY_CODE — ungroomed ═══" >&2
+    echo "" >&2
+    echo "This story has ZERO tasks and ZERO acceptance criteria." >&2
+    echo "You must self-groom before completing:" >&2
+    echo "  1. Generate at least 2 tasks from the story description" >&2
+    echo "  2. Generate at least 1 acceptance criterion (Given/When/Then)" >&2
+    echo "  3. Include them in your structured JSON output" >&2
+    echo "" >&2
+    echo "Read the story's title, description, and intent to produce tasks and ACs." >&2
+    echo "═══════════════════════════════════════" >&2
+    exit 1
+fi
+
+# Allow stop if tasks exist but none are defined (story has partial grooming)
 if [ "$TOTAL" -eq 0 ]; then
     exit 0
 fi

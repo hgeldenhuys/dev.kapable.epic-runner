@@ -306,7 +306,8 @@ pub async fn run(
 
         let batch: Vec<&serde_json::Value> = eligible_stories.into_iter().take(5).collect();
 
-        // ── DoR gate: refuse to start sprint with ungroomed stories ──
+        // ── DoR soft warning: log ungroomed stories but continue ──
+        // Builder agents self-groom inline (optimistic grooming), so we no longer block.
         let mut ungroomed: Vec<String> = Vec::new();
         for story in &batch {
             let code = story["code"].as_str().unwrap_or("?");
@@ -319,15 +320,11 @@ pub async fn run(
             }
         }
         if !ungroomed.is_empty() {
-            eprintln!("\n\x1b[1;31m═══ DoR VIOLATION: Ungroomed stories ═══\x1b[0m");
-            eprintln!("The following stories have no acceptance_criteria or tasks:");
+            eprintln!("\n\x1b[1;33m⚠ DoR WARNING: Ungroomed stories (builder will self-groom)\x1b[0m");
             for code in &ungroomed {
-                eprintln!("  • {code}");
+                eprintln!("  • {code} — missing ACs or tasks, builder will generate inline");
             }
-            eprintln!("\nStories must be groomed before sprint execution (v4 flow).");
-            eprintln!("Run: epic-runner backlog groom --epic {}", epic.code);
-            eprintln!("\x1b[1;31m════════════════════════════════════════\x1b[0m\n");
-            break;
+            eprintln!();
         }
 
         let story_ids: Vec<String> = batch

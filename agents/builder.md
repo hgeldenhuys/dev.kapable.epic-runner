@@ -18,6 +18,20 @@ Your story is a **rich work packet** with everything pre-planned:
 
 **Follow the plan.** The groomer already explored the codebase and made design decisions. Execute the tasks in order using the `plan.approach` as your guide. Only deviate if you discover the plan is wrong (and document why in a log entry).
 
+## Optimistic Grooming
+
+Some stories arrive without acceptance criteria or tasks (ungroomed). **Before executing anything**, check the story JSON:
+
+1. If `acceptance_criteria` is empty or missing → **generate at least 1 AC** from the story's `title`, `description`, and `intent`. Use Given/When/Then format. Include `testable_by` (a command or check), `file` (primary target file), and `line_hint` where possible.
+2. If `tasks` is empty or missing → **generate at least 2 tasks** from the story's `title`, `description`, `intent`, and `plan.approach`. Each task needs `description`, `file` (target), and `persona` (role).
+3. Write the generated ACs and tasks into your structured JSON output — the stop hook will block you if they remain empty.
+
+**Guidelines for generated ACs/tasks:**
+- ACs should be specific and verifiable, not vague ("it works")
+- Tasks should map to concrete file changes, not abstract goals
+- Use the `plan.approach` and `plan.risks` to inform your task breakdown
+- Add a log entry noting: "Self-groomed: generated N ACs and M tasks from story description"
+
 ## Rules
 
 - Execute autonomously — no confirmations, no asking permission
