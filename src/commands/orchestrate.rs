@@ -420,8 +420,25 @@ pub async fn run(
                     );
                 }
 
-                // 2. Check if only blocked stories remain — if so, block the epic
-                let has_workable = has_workable_stories(client, &epic.code).await;
+                // 2. Check if all stories are done — if so, close the epic
+                //    even if judge said intent_satisfied=false (deploy issue != code issue)
+                let (has_workable, all_done) = check_story_status(client, &epic.code).await;
+                if all_done {
+                    eprintln!(
+                        "All stories {} — closing epic despite judge not marking intent satisfied",
+                        "done".green().bold()
+                    );
+                    if let Err(e) = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/epics/{}", epic.id),
+                            &json!({ "status": "done" }),
+                        )
+                        .await
+                    {
+                        eprintln!("Failed to close epic: {}", e);
+                    }
+                    break;
+                }
                 if !has_workable {
                     eprintln!(
                         "All remaining stories are {} — blocking epic",
@@ -555,22 +572,37 @@ async fn ready_incomplete_stories(client: &ApiClient, epic_code: &str) -> usize 
     count
 }
 
-/// Check if the epic has any workable stories (ready/draft/planned — not just blocked).
-/// When only blocked stories remain, the epic itself should be blocked.
-async fn has_workable_stories(client: &ApiClient, epic_code: &str) -> bool {
+/// Check story status for the epic. Returns (has_workable, all_done).
+/// - has_workable: true if any stories are ready/draft/planned/in_progress
+/// - all_done: true if ALL stories assigned to this epic are done
+async fn check_story_status(client: &ApiClient, epic_code: &str) -> (bool, bool) {
     let all_stories: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
         .get_with_params("/v1/stories", &[("epic_code", epic_code)])
         .await;
     let stories = match all_stories {
         Ok(d) => d.data,
-        Err(_) => return true, // assume workable on error
+        Err(_) => return (true, false), // assume workable on error
     };
 
-    stories.iter().any(|s| {
+    let epic_stories: Vec<_> = stories
+        .iter()
+        .filter(|s| s["epic_code"].as_str() == Some(epic_code))
+        .collect();
+
+    if epic_stories.is_empty() {
+        return (false, false);
+    }
+
+    let has_workable = epic_stories.iter().any(|s| {
         let status = s["status"].as_str().unwrap_or("");
-        s["epic_code"].as_str() == Some(epic_code)
-            && matches!(status, "ready" | "draft" | "planned" | "in_progress")
-    })
+        matches!(status, "ready" | "draft" | "planned" | "in_progress")
+    });
+
+    let all_done = epic_stories
+        .iter()
+        .all(|s| s["status"].as_str() == Some("done"));
+
+    (has_workable, all_done)
 }
 
 /// Analyze ceremony results across sprints and patch the flow YAML for the next sprint.
