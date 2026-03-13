@@ -57,6 +57,11 @@ impl ApiClient {
         }
     }
 
+    /// Returns the API key (needed for forwarding to child processes).
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
     pub fn from_env_with_overrides(
         url_override: Option<String>,
         key_override: Option<String>,

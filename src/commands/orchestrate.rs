@@ -323,7 +323,13 @@ pub async fn run(
         // SPAWN SPRINT RUNNER AS CHILD PROCESS
         tracing::info!(sprint_id, sprint_num, "Spawning sprint-run child process");
         let mut cmd = std::process::Command::new(&exe_snapshot);
-        cmd.arg("sprint-run").arg(sprint_id);
+        // Forward API credentials so child process can access the same project
+        cmd.arg("--url")
+            .arg(&client.base_url)
+            .arg("--key")
+            .arg(client.api_key())
+            .arg("sprint-run")
+            .arg(sprint_id);
         // Only pass --model/--effort when user explicitly overrides.
         // When omitted, sprint-run uses per-node models from the flow YAML.
         if let Some(model) = &args.model {
