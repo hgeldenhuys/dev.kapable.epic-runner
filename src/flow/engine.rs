@@ -82,6 +82,9 @@ pub struct FlowContext {
     pub add_dirs: Vec<String>,
     /// Learnings from previous sprints (fed back by retro → next sprint)
     pub previous_learnings: String,
+    /// Structured log of all previous sprints' outcomes (verdict, deploy, files, commits).
+    /// Injected into builder system prompt via {{epic_log}} so sprint N+1 knows what N accomplished.
+    pub epic_log: String,
     /// Product brief — architecture, file map, conventions, gotchas.
     /// Injected into agent system prompts via {{product.brief}} to cut orientation cost.
     pub product_brief: String,
@@ -2076,6 +2079,8 @@ fn build_executor_config(
 /// - {{ceremony_results_json}} — structured JSON array of all node results so far
 /// - {{supervisor_decisions}} — summary of all supervisor decisions so far
 /// - {{repo.claude_md}} — contents of CLAUDE.md from the repo root (project conventions)
+/// - {{previous_learnings}} — retro action items + patterns from prior sprints
+/// - {{epic_log}} — structured handoff summaries from all previous sprints (verdict, deploy, files, commits)
 /// - {{product.brief}} — product architecture, file map, conventions (cuts agent orientation cost)
 /// - {{product.definition_of_done}} — conditional DoD rules for the judge
 fn interpolate(
@@ -2144,6 +2149,7 @@ fn interpolate(
         .replace("{{supervisor_decisions}}", &supervisor_decisions)
         .replace("{{repo.claude_md}}", &claude_md)
         .replace("{{previous_learnings}}", &ctx.previous_learnings)
+        .replace("{{epic_log}}", &ctx.epic_log)
         .replace("{{deploy_output}}", ab_urls)
         .replace("{{product.brief}}", &ctx.product_brief)
         .replace(
@@ -2388,6 +2394,7 @@ mod tests {
                 started_at: None,
                 finished_at: None,
                 heartbeat_at: None,
+                handoff_summary: None,
                 created_at: Utc::now(),
             },
             stories: serde_json::json!([]),
@@ -2398,6 +2405,7 @@ mod tests {
             budget_override: None,
             add_dirs,
             previous_learnings: String::new(),
+            epic_log: String::new(),
             product_brief: String::new(),
             product_definition_of_done: String::new(),
             current_story: None,

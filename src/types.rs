@@ -507,6 +507,11 @@ pub struct Sprint {
     /// Updated every ~30s during execution. Stale heartbeats (>5 min) indicate zombie sprints.
     #[serde(default)]
     pub heartbeat_at: Option<DateTime<Utc>>,
+    /// Condensed handoff summary written after sprint completes.
+    /// Contains verdict, deploy outcome, files changed, commits, stories completed, and cost.
+    /// Used by build_epic_log() to construct {{epic_log}} for the next sprint's builder.
+    #[serde(default)]
+    pub handoff_summary: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 

@@ -42,6 +42,8 @@ nodes:
 
         {{previous_learnings}}
 
+        {{epic_log}}
+
         Your story:
         {{story}}
 

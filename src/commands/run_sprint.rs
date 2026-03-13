@@ -73,6 +73,9 @@ pub async fn run(
     // 3b. Load previous sprint learnings (feedback loop: retro → next sprint)
     let previous_learnings = load_previous_learnings(client, &epic.code).await;
 
+    // 3c. Build epic log from previous sprints' handoff summaries (feedback loop: sprint → next sprint)
+    let epic_log = build_epic_log(client, &sprint.epic_id.to_string(), sprint.number).await;
+
     // 4. Load ceremony flow (cascade: CLI override → per-epic patched → config → embedded)
     let config =
         crate::config::find_project_config().and_then(|p| crate::config::read_config(&p).ok());
@@ -265,6 +268,7 @@ pub async fn run(
         budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
         previous_learnings,
+        epic_log,
         product_brief,
         product_definition_of_done: product_dod,
         current_story: None,
@@ -476,6 +480,20 @@ pub async fn run(
                 .insert("next_sprint_goal".to_string(), json!(next_goal));
         }
     }
+
+    // Build handoff_summary — condensed context for the next sprint's builder via {{epic_log}}.
+    // Captures what happened so sprint N+1 doesn't redo work.
+    let handoff_summary = build_handoff_summary(
+        &sprint,
+        &judge_verdict,
+        &results,
+        intent_satisfied,
+        total_cost,
+    );
+    sprint_patch
+        .as_object_mut()
+        .unwrap()
+        .insert("handoff_summary".to_string(), handoff_summary);
 
     if let Err(e) = client
         .patch::<_, serde_json::Value>(&format!("/v1/er_sprints/{}", sprint.id), &sprint_patch)
@@ -905,6 +923,197 @@ pub async fn run(
     // exit(0) = mission complete
 
     Ok(())
+}
+
+/// Build a condensed handoff summary for the current sprint.
+/// Written to the sprint record so subsequent sprints can reconstruct context via build_epic_log().
+fn build_handoff_summary(
+    sprint: &Sprint,
+    judge_verdict: &Option<crate::types::JudgeVerdict>,
+    results: &[crate::flow::engine::NodeResult],
+    intent_satisfied: bool,
+    total_cost: f64,
+) -> serde_json::Value {
+    // Collect files changed and commit hashes from builder output
+    let mut all_files: Vec<String> = Vec::new();
+    let mut all_commits: Vec<String> = Vec::new();
+    if let Some(execute_result) = results.iter().find(|r| r.key == "execute") {
+        if let Some(ref builder_output) = execute_result.builder_output {
+            for story in &builder_output.stories {
+                for f in &story.changed_files {
+                    if !all_files.contains(f) {
+                        all_files.push(f.clone());
+                    }
+                }
+                for c in &story.commit_hashes {
+                    if !all_commits.contains(c) {
+                        all_commits.push(c.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Extract deploy outcome from the deploy_standby node result
+    let deploy_outcome =
+        if let Some(deploy_result) = results.iter().find(|r| r.key == "deploy_standby") {
+            match deploy_result.status {
+                crate::types::CeremonyStatus::Completed => json!({
+                    "status": "deployed",
+                    "detail": deploy_result.output.as_deref().unwrap_or("deployed successfully"),
+                }),
+                crate::types::CeremonyStatus::Skipped => json!({
+                    "status": "skipped",
+                    "reason": deploy_result.output.as_deref()
+                        .unwrap_or("no deploy_app_id configured"),
+                }),
+                _ => json!({
+                    "status": "failed",
+                    "detail": deploy_result.output.as_deref().unwrap_or("deploy failed"),
+                }),
+            }
+        } else {
+            json!({
+                "status": "skipped",
+                "reason": "no deploy node in flow",
+            })
+        };
+
+    // Extract verdict summary
+    let verdict_summary = if let Some(ref verdict) = judge_verdict {
+        json!({
+            "intent_satisfied": verdict.intent_satisfied,
+            "mission_progress": verdict.mission_progress,
+            "summary": verdict.summary,
+            "stories_completed": verdict.stories_completed,
+        })
+    } else {
+        json!({
+            "intent_satisfied": intent_satisfied,
+            "summary": "no judge ran",
+        })
+    };
+
+    json!({
+        "sprint_number": sprint.number,
+        "goal": sprint.goal,
+        "verdict": verdict_summary,
+        "deploy_outcome": deploy_outcome,
+        "files_changed": all_files,
+        "commit_hashes": all_commits,
+        "cost_usd": total_cost,
+    })
+}
+
+/// Build the epic log from all previous sprints' handoff_summaries.
+/// Returns a formatted markdown string for injection into the {{epic_log}} template variable.
+/// Best-effort: returns empty string on any failure (network, parse, no data).
+async fn build_epic_log(client: &ApiClient, epic_id: &str, current_sprint_number: i32) -> String {
+    use crate::api_client::DataWrapper;
+
+    let resp: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+        .get_with_params("/v1/er_sprints", &[("epic_id", epic_id)])
+        .await;
+
+    let sprints = match resp {
+        Ok(wrapper) => wrapper.data,
+        Err(e) => {
+            tracing::debug!(error = %e, "Could not load previous sprints for epic_log — starting fresh");
+            return String::new();
+        }
+    };
+
+    // Filter to completed sprints before the current one, with handoff_summaries
+    let mut previous: Vec<&serde_json::Value> = sprints
+        .iter()
+        .filter(|s| {
+            let num = s["number"].as_i64().unwrap_or(0) as i32;
+            let has_summary = !s["handoff_summary"].is_null();
+            num < current_sprint_number && has_summary
+        })
+        .collect();
+    previous.sort_by_key(|s| s["number"].as_i64().unwrap_or(0));
+
+    if previous.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("## Epic Log — Previous Sprint Results\n\n");
+    for sprint_data in &previous {
+        let summary = &sprint_data["handoff_summary"];
+        let num = summary["sprint_number"].as_i64().unwrap_or(0);
+        let goal = summary["goal"].as_str().unwrap_or("(no goal)");
+
+        out.push_str(&format!("### Sprint {}\n", num));
+        out.push_str(&format!("**Goal:** {}\n", goal));
+
+        // Verdict
+        let verdict = &summary["verdict"];
+        let satisfied = verdict["intent_satisfied"].as_bool().unwrap_or(false);
+        let progress = verdict["mission_progress"]
+            .as_f64()
+            .map(|p| format!("{:.0}%", p))
+            .unwrap_or_else(|| "unknown".to_string());
+        let verdict_text = verdict["summary"].as_str().unwrap_or("no summary");
+        out.push_str(&format!(
+            "**Verdict:** {} (progress: {}, satisfied: {})\n",
+            verdict_text, progress, satisfied
+        ));
+
+        // Stories completed
+        if let Some(stories) = verdict["stories_completed"].as_array() {
+            if !stories.is_empty() {
+                out.push_str("**Stories completed:** ");
+                let codes: Vec<&str> = stories.iter().filter_map(|s| s.as_str()).collect();
+                out.push_str(&codes.join(", "));
+                out.push('\n');
+            }
+        }
+
+        // Deploy outcome
+        let deploy = &summary["deploy_outcome"];
+        let deploy_status = deploy["status"].as_str().unwrap_or("unknown");
+        match deploy_status {
+            "deployed" => out.push_str("**Deploy:** deployed successfully\n"),
+            "skipped" => {
+                let reason = deploy["reason"].as_str().unwrap_or("unknown reason");
+                out.push_str(&format!("**Deploy:** skipped ({})\n", reason));
+            }
+            "failed" => {
+                let detail = deploy["detail"].as_str().unwrap_or("unknown error");
+                out.push_str(&format!("**Deploy:** failed ({})\n", detail));
+            }
+            _ => out.push_str(&format!("**Deploy:** {}\n", deploy_status)),
+        }
+
+        // Files changed
+        if let Some(files) = summary["files_changed"].as_array() {
+            if !files.is_empty() {
+                out.push_str("**Files changed:**\n");
+                for f in files {
+                    if let Some(path) = f.as_str() {
+                        out.push_str(&format!("  - {}\n", path));
+                    }
+                }
+            }
+        }
+
+        // Commit hashes
+        if let Some(commits) = summary["commit_hashes"].as_array() {
+            if !commits.is_empty() {
+                let shas: Vec<&str> = commits.iter().filter_map(|c| c.as_str()).collect();
+                out.push_str(&format!("**Commits:** {}\n", shas.join(", ")));
+            }
+        }
+
+        // Cost
+        if let Some(cost) = summary["cost_usd"].as_f64() {
+            out.push_str(&format!("**Cost:** ${:.2}\n", cost));
+        }
+
+        out.push('\n');
+    }
+    out
 }
 
 /// Load learnings from previous sprints of this epic.
