@@ -1256,6 +1256,43 @@ async fn execute_deploy_node(
         timestamp: chrono::Utc::now(),
     });
 
+    // Stash any uncommitted changes in the main repo before checkout.
+    // This allows the deploy node to succeed even when the user's working directory is dirty.
+    let stash_result = std::process::Command::new("git")
+        .args(["stash", "--include-untracked"])
+        .current_dir(repo_path)
+        .output();
+    let did_stash = match &stash_result {
+        Ok(output) if output.status.success() => {
+            tracing::info!("Stashed uncommitted changes in main repo before deploy");
+            true
+        }
+        Ok(_) => {
+            // Exit code 1 = nothing to stash (clean repo), which is fine
+            false
+        }
+        Err(e) => {
+            tracing::warn!("Failed to run git stash: {} — proceeding without stash", e);
+            false
+        }
+    };
+    // Guard: automatically pop stash on any exit path (success, error, or `?` propagation)
+    let repo_for_stash = repo_path.clone();
+    let _stash_guard = if did_stash {
+        Some(scopeguard::guard((), move |_| {
+            tracing::info!("Restoring stashed changes in main repo");
+            let pop = std::process::Command::new("git")
+                .args(["stash", "pop", "--quiet"])
+                .current_dir(&repo_for_stash)
+                .output();
+            if let Err(e) = pop {
+                tracing::warn!("Failed to pop stash: {}", e);
+            }
+        }))
+    } else {
+        None
+    };
+
     // Checkout the default branch in the repo root
     let default_branch = ctx.default_branch.as_str();
     let checkout = std::process::Command::new("git")
