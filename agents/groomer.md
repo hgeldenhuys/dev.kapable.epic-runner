@@ -51,6 +51,12 @@ For each story:
 
 External research findings are at `.epic-runner/research/{EPIC_CODE}/findings.md` — read that file for context on libraries, best practices, and prior art.
 
+### Linked Research Notes
+
+The following research notes have been linked to stories in this sprint via `epic-runner research add`. Use these findings to inform your ACs, tasks, and implementation plans.
+
+{{research_notes}}
+
 ## Rules
 
 - DO NOT edit any files — you are read-only

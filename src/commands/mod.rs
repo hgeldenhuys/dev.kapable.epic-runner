@@ -5,6 +5,7 @@ pub mod impediment;
 pub mod init;
 pub mod orchestrate;
 pub mod product;
+pub mod research;
 pub mod retro;
 pub mod review;
 pub mod run_sprint;
@@ -45,6 +46,8 @@ pub enum Commands {
     /// Validate a ceremony flow YAML file
     #[command(name = "flow-validate")]
     FlowValidate(flow_validate::FlowValidateArgs),
+    /// Manage research notes (add, list, show, link, unlink)
+    Research(research::ResearchArgs),
     /// Show dashboard status
     Status(status::StatusArgs),
 }
@@ -66,6 +69,7 @@ pub async fn run(
         Commands::Retro(args) => retro::run(args, client, cli).await,
         Commands::Impediment(args) => impediment::run(args, client, cli).await,
         Commands::FlowValidate(args) => Ok(flow_validate::run(args)?),
+        Commands::Research(args) => research::run(args, client, cli).await,
         Commands::Status(args) => status::run(args, client, cli).await,
     }
 }

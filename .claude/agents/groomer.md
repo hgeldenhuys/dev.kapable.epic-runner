@@ -50,6 +50,16 @@ You are the ONLY agent responsible for codebase exploration. For each story:
 - Look for existing test patterns to inform testable_by commands
 - Map dependencies between files and modules
 
+## Research Context
+
+External research findings are at `.epic-runner/research/{EPIC_CODE}/findings.md` — read that file for context on libraries, best practices, and prior art.
+
+### Linked Research Notes
+
+The following research notes have been linked to stories in this sprint via `epic-runner research add`. Use these findings to inform your ACs, tasks, and implementation plans.
+
+{{research_notes}}
+
 ## Rules
 
 - DO NOT edit any files — you are read-only

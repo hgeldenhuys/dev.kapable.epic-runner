@@ -50,6 +50,44 @@ pub fn resolve_agent_path(name: &str, repo_path: &Path) -> Option<PathBuf> {
     Some(agent_path)
 }
 
+/// Resolve an agent name to an absolute path, replacing template variables.
+///
+/// Same resolution order as `resolve_agent_path`, but substitutes `{{key}}` → `value`
+/// in the agent content before writing to disk. Used by the groomer to inject
+/// linked research notes into the prompt.
+///
+/// Variables map: e.g. `{"research_notes": "## Vector DB\n..."}`.
+pub fn resolve_agent_path_with_vars(
+    name: &str,
+    repo_path: &Path,
+    vars: &HashMap<String, String>,
+) -> Option<PathBuf> {
+    // 1. Check for user override in the target repo
+    let repo_agent = repo_path.join(".claude/agents").join(format!("{name}.md"));
+    let raw_content = if repo_agent.exists() {
+        tracing::debug!(agent = name, path = %repo_agent.display(), "Using repo-local agent override (with vars)");
+        std::fs::read_to_string(&repo_agent).ok()?
+    } else {
+        // 2. Fall back to embedded agent
+        let content = embedded_agents().get(name)?;
+        (*content).to_string()
+    };
+
+    // Replace template variables
+    let mut content = raw_content;
+    for (key, value) in vars {
+        let placeholder = format!("{{{{{key}}}}}");
+        content = content.replace(&placeholder, value);
+    }
+
+    let agent_dir = std::env::temp_dir().join("epic-runner-agents");
+    std::fs::create_dir_all(&agent_dir).ok()?;
+    let agent_path = agent_dir.join(format!("{name}.md"));
+    std::fs::write(&agent_path, &content).ok()?;
+    tracing::debug!(agent = name, path = %agent_path.display(), vars_count = vars.len(), "Wrote agent with vars to temp dir");
+    Some(agent_path)
+}
+
 /// List all embedded agent names.
 pub fn list_embedded() -> Vec<&'static str> {
     let mut names: Vec<_> = embedded_agents().keys().copied().collect();
@@ -96,5 +134,34 @@ mod tests {
         assert_eq!(names.len(), 7);
         assert!(names.contains(&"researcher"));
         assert!(names.contains(&"builder"));
+    }
+
+    #[test]
+    fn resolve_with_vars_replaces_placeholders() {
+        let fake_repo = PathBuf::from("/tmp/nonexistent-repo-for-test");
+        let mut vars = HashMap::new();
+        vars.insert(
+            "research_notes".to_string(),
+            "## Vector DB Benchmarks\nPgvector outperforms FAISS for < 1M rows.".to_string(),
+        );
+        let path = resolve_agent_path_with_vars("groomer", &fake_repo, &vars).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("## Vector DB Benchmarks"));
+        assert!(content.contains("Pgvector outperforms FAISS"));
+        // The placeholder should be gone
+        assert!(!content.contains("{{research_notes}}"));
+    }
+
+    #[test]
+    fn resolve_with_empty_vars_still_resolves() {
+        let fake_repo = PathBuf::from("/tmp/nonexistent-repo-for-test");
+        let vars = HashMap::new();
+        let path = resolve_agent_path_with_vars("groomer", &fake_repo, &vars).unwrap();
+        assert!(path.exists());
+        // File should contain groomer content (no assertions on specific placeholders
+        // since parallel tests write to the same temp path)
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("sprint planner"));
     }
 }

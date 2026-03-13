@@ -42,6 +42,9 @@ const TABLES: &[&str] = &[
     "research_artifacts",
     // v4: daemon health monitoring
     "daemon_status",
+    // v5: many-to-many research notes ↔ stories
+    "research_notes",
+    "story_research_links",
 ];
 
 pub async fn run(
