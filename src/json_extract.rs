@@ -132,6 +132,53 @@ pub fn extract_json_array(text: &str) -> Option<Vec<serde_json::Value>> {
     None
 }
 
+/// Extract ALL valid JSON objects from text that may contain multiple objects
+/// separated by markdown headers, `---`, or other text.
+///
+/// Used for multi-story output where each story produces its own JSON block
+/// combined with markdown separators (e.g., `## ER-022\n{json}\n\n---\n\n## ER-023\n{json}`).
+pub fn extract_all_json_objects(text: &str) -> Vec<serde_json::Value> {
+    let mut results = Vec::new();
+
+    // First try: maybe the whole thing is one valid JSON object
+    if let Some(v) = extract_json_object(text) {
+        results.push(v);
+        return results;
+    }
+
+    // Split by common multi-story separators and try each section
+    // Handles: "## ER-022\n{json}\n\n---\n\n## ER-023\n{json}"
+    // and: "## ER-022\n```json\n{json}\n```\n\n## ER-023\n```json\n{json}\n```"
+    for section in text.split("\n---\n") {
+        if let Some(v) = extract_json_object(section) {
+            results.push(v);
+        }
+    }
+
+    // If splitting by --- didn't work, try splitting by markdown headers
+    if results.is_empty() {
+        let mut current_section = String::new();
+        for line in text.lines() {
+            if line.starts_with("## ") && !current_section.is_empty() {
+                if let Some(v) = extract_json_object(&current_section) {
+                    results.push(v);
+                }
+                current_section.clear();
+            }
+            current_section.push_str(line);
+            current_section.push('\n');
+        }
+        // Don't forget the last section
+        if !current_section.is_empty() {
+            if let Some(v) = extract_json_object(&current_section) {
+                results.push(v);
+            }
+        }
+    }
+
+    results
+}
+
 /// Strip markdown code fences from text.
 /// Handles: ```json\n...\n```, ```\n...\n```, ```JSON\n...\n```
 fn strip_markdown_fences(text: &str) -> Option<&str> {

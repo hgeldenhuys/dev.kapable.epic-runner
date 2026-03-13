@@ -22,11 +22,13 @@ pub struct BuilderOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuilderStoryResult {
     /// Original story UUID — must match input story for write-back
+    #[serde(default)]
     pub id: String,
     /// Story code (e.g. "ER-049")
     #[serde(default)]
     pub code: Option<String>,
     /// Final status: "done", "blocked", "in_progress"
+    #[serde(default)]
     pub status: String,
     /// Reason if status is "blocked"
     #[serde(default)]
@@ -54,6 +56,7 @@ pub struct BuilderStoryResult {
 /// Task result from builder — mirrors StoryTask but with completion data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuilderTaskResult {
+    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub done: bool,
@@ -64,6 +67,7 @@ pub struct BuilderTaskResult {
 /// AC result from builder — mirrors AcceptanceCriterion but with verification data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuilderACResult {
+    #[serde(default)]
     pub criterion: String,
     #[serde(default)]
     pub verified: bool,
@@ -81,13 +85,27 @@ pub struct BuilderACResult {
 pub fn parse_builder_output(text: Option<&str>) -> Option<BuilderOutput> {
     let text = text?;
 
-    // Try extracting as a JSON object with a "stories" key
     let value = crate::json_extract::extract_json_object(text)?;
 
-    // The builder output must have a "stories" array
-    value.get("stories").and_then(|s| s.as_array())?;
+    // Try 1: Full BuilderOutput with "stories" array
+    if value.get("stories").and_then(|s| s.as_array()).is_some() {
+        if let Ok(output) = serde_json::from_value::<BuilderOutput>(value.clone()) {
+            return Some(output);
+        }
+    }
 
-    serde_json::from_value::<BuilderOutput>(value).ok()
+    // Try 2: Single BuilderStoryResult (per-story mode output) — wrap it.
+    // Require at least an "id" or "status" field to distinguish from random JSON,
+    // since all fields are #[serde(default)].
+    if value.get("id").is_some() || value.get("status").is_some() {
+        if let Ok(story) = serde_json::from_value::<BuilderStoryResult>(value) {
+            return Some(BuilderOutput {
+                stories: vec![story],
+            });
+        }
+    }
+
+    None
 }
 
 // ── Write-back ────────────────────────────────

@@ -1,4 +1,8 @@
 /target
 .DS_Store
 .epic-runner/config.toml
+.epic-runner/stories/
+.epic-runner/research/
+.epic-runner/checkpoints/
+.epic-runner/*.lock
 .claude/worktrees/

@@ -172,7 +172,7 @@ impl EventSink {
         });
 
         match client
-            .post::<_, serde_json::Value>("/v1/sprint-artifacts/finalize", &payload)
+            .post::<_, serde_json::Value>("/v1/sprint_artifacts", &payload)
             .await
         {
             Ok(_) => tracing::info!(artifact_type, node_key, "Artifact finalized"),
@@ -197,6 +197,7 @@ async fn flush_batch(
                 "sprint_id": event.sprint_id.to_string(),
                 "event_type": event.event_type_str(),
                 "node_id": event.node_id,
+                "node_key": event.node_id,
                 "node_label": event.node_label,
                 "summary": event.summary,
                 "detail": event.detail,

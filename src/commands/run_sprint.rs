@@ -902,18 +902,32 @@ async fn save_sprint_learnings(
         None => return,
     };
 
-    // Parse retro JSON output (may be wrapped in markdown fences, preamble, or trailing text)
-    let parsed: serde_json::Value = match crate::json_extract::extract_json_object(output) {
-        Some(v) => v,
-        None => {
-            tracing::warn!("Could not extract JSON from retro output — skipping learnings save");
-            return;
-        }
-    };
+    // Parse retro JSON output — may contain multiple per-story JSON objects
+    // separated by markdown headers/dividers
+    let all_parsed = crate::json_extract::extract_all_json_objects(output);
+    if all_parsed.is_empty() {
+        tracing::warn!("Could not extract JSON from retro output — skipping learnings save");
+        return;
+    }
 
-    let action_items = parsed["action_items"].clone();
-    let patterns = parsed["patterns_to_codify"].clone();
-    let friction = parsed["friction_points"].clone();
+    // Merge all per-story retro results into combined arrays
+    let mut action_items = Vec::new();
+    let mut patterns = Vec::new();
+    let mut friction = Vec::new();
+    for parsed in &all_parsed {
+        if let Some(arr) = parsed["action_items"].as_array() {
+            action_items.extend(arr.iter().cloned());
+        }
+        if let Some(arr) = parsed["patterns_to_codify"].as_array() {
+            patterns.extend(arr.iter().cloned());
+        }
+        if let Some(arr) = parsed["friction_points"].as_array() {
+            friction.extend(arr.iter().cloned());
+        }
+    }
+    let action_items = serde_json::Value::Array(action_items);
+    let patterns = serde_json::Value::Array(patterns);
+    let friction = serde_json::Value::Array(friction);
 
     // Only save if there's something worth remembering
     if action_items.as_array().is_none_or(|a| a.is_empty())
@@ -954,15 +968,18 @@ fn create_backlog_from_retro(
         None => return,
     };
 
-    let parsed: serde_json::Value = match crate::json_extract::extract_json_object(output) {
-        Some(v) => v,
-        None => return,
-    };
-
-    let items = match parsed["discovered_work"].as_array() {
-        Some(arr) if !arr.is_empty() => arr,
-        _ => return,
-    };
+    // Parse multi-story retro output and merge discovered_work
+    let all_parsed = crate::json_extract::extract_all_json_objects(output);
+    let mut discovered: Vec<serde_json::Value> = Vec::new();
+    for parsed in &all_parsed {
+        if let Some(arr) = parsed["discovered_work"].as_array() {
+            discovered.extend(arr.iter().cloned());
+        }
+    }
+    if discovered.is_empty() {
+        return;
+    }
+    let items = &discovered;
 
     let mut created = 0;
     for item in items {
@@ -1029,6 +1046,12 @@ async fn write_groom_results_to_stories(
         Some(o) => o,
         None => return,
     };
+
+    // Skip if the groom node was conditionally skipped
+    if output.starts_with("Skipped") {
+        tracing::debug!("Groom was skipped — no write-back needed");
+        return;
+    }
 
     // Parse groomer's JSON array output (may be wrapped in markdown fences)
     let stories: Vec<serde_json::Value> = match crate::json_extract::extract_json_array(output) {
@@ -1252,18 +1275,22 @@ fn merge_into_rich_brief(existing: &str, learnings: &str, retro_output: Option<&
     // Build the new Patterns & Conventions section
     let mut new_patterns = String::new();
     if let Some(retro) = retro_output {
-        if let Some(parsed) = crate::json_extract::extract_json_object(retro) {
+        // Parse multi-story retro output and merge patterns
+        let all_parsed = crate::json_extract::extract_all_json_objects(retro);
+        let mut all_patterns = Vec::new();
+        for parsed in &all_parsed {
             if let Some(patterns) = parsed["patterns_to_codify"].as_array() {
-                if !patterns.is_empty() {
-                    new_patterns.push_str("## Patterns & Conventions\n\n");
-                    for p in patterns {
-                        if let Some(text) = p.as_str() {
-                            new_patterns.push_str(&format!("- {text}\n"));
-                        }
-                    }
-                    new_patterns.push('\n');
+                all_patterns.extend(patterns.iter().cloned());
+            }
+        }
+        if !all_patterns.is_empty() {
+            new_patterns.push_str("## Patterns & Conventions\n\n");
+            for p in &all_patterns {
+                if let Some(text) = p.as_str() {
+                    new_patterns.push_str(&format!("- {text}\n"));
                 }
             }
+            new_patterns.push('\n');
         }
     }
     if new_patterns.is_empty() {

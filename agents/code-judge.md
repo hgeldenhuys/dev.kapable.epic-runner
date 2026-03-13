@@ -30,9 +30,10 @@ For EACH story, evaluate:
 1. Run each AC's `testable_by` command — does it pass?
 2. Check each `criterion` — is it satisfied by the code changes?
 3. Verify each task was addressed (check the `file` paths in git diff)
-4. If a story's ACs are met and tests pass → include its code in `stories_completed`
-5. If a story is incomplete → add to `story_updates` with new tasks and reason
-6. **ONLY if the plan was FUNDAMENTALLY wrong** (wrong approach, impossible design) → include in `stories_to_regroom`. This REJECTS the story and creates a new one. Use sparingly — most incomplete stories just need more tasks, not rejection.
+4. **Check task completion** — are all tasks marked `done: true` with an `outcome`? A story with incomplete tasks is NOT done, even if the code looks correct.
+5. If a story's ACs are met AND tasks are done AND tests pass → include its code in `stories_completed`
+6. If a story is incomplete → add to `story_updates` with new tasks and reason
+7. **ONLY if the plan was FUNDAMENTALLY wrong** (wrong approach, impossible design) → include in `stories_to_regroom`. This REJECTS the story and creates a new one. Use sparingly — most incomplete stories just need more tasks, not rejection.
 
 ## Product Definition of Done
 
@@ -57,8 +58,9 @@ Execute ALL of these steps:
 
 - `deploy_ready: true` — build passes, tests pass, no security issues
 - `deploy_ready: false` — any blocker found
-- `intent_satisfied: true` — ALL stories completed AND epic intent is met
-- `stories_completed` — list of story CODES that passed all ACs
+- `intent_satisfied: true` — ALL stories completed AND the CODE intent is met. This is about **code correctness**, not deployment success. If all stories' ACs pass and tasks are done, `intent_satisfied` should be `true` even if deploy has issues (deploy is a separate concern handled by the deploy node).
+- `intent_satisfied: false` — stories are incomplete, ACs failing, or code doesn't match intent
+- `stories_completed` — list of story CODES that passed all ACs AND have all tasks done
 - `stories_to_regroom` — stories where the plan was wrong and need re-planning
 - `story_updates` — for incomplete stories: add NEW tasks, update existing ACs, provide specific reasons
 
