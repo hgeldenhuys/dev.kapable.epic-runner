@@ -104,22 +104,24 @@ mod tests {
 
     #[test]
     fn dead_pid_is_not_alive() {
-        // Spawn a process and wait for it to exit, then check its PID.
-        let child = std::process::Command::new("true")
-            .spawn()
-            .expect("failed to spawn 'true'");
-        let pid = child.id();
-        // Wait for it to finish
-        let _ = std::process::Command::new("true").status(); // sync barrier
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        // The PID should now be dead (or recycled, but extremely unlikely in 100ms)
-        // We can't guarantee this 100%, but for practical testing it's reliable.
-        // Use a definitely-dead PID instead: PID 4294967 is almost certainly not running.
+        // Use a very high PID that is almost certainly not running.
+        // PID 4,294,967 exceeds the max PID on most systems.
         assert!(
             !is_process_alive(4_294_967),
             "very high PID should not be alive"
         );
-        let _ = pid; // suppress unused warning
+    }
+
+    #[test]
+    fn is_process_alive_returns_false_for_pid_99999() {
+        // AC5: is_process_alive(99999) should return false.
+        // PID 99999 *could* theoretically be alive on a loaded system, but this
+        // matches the acceptance criterion directly. The dead_pid_is_not_alive
+        // test above uses a safer PID as fallback.
+        assert!(
+            !is_process_alive(99999),
+            "PID 99999 should not be alive on this machine"
+        );
     }
 
     #[test]
