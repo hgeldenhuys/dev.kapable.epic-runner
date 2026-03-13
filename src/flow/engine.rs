@@ -104,6 +104,10 @@ pub struct NodeResult {
     /// Parsed builder output (populated when per_story execution completes).
     /// Downstream write-back logic uses this instead of re-parsing the output text.
     pub builder_output: Option<crate::builder::BuilderOutput>,
+    /// All assistant text blocks from the Claude session. Structured output (JSON)
+    /// often appears in mid-conversation messages rather than the final result.
+    /// Used as fallback when `output` fails to parse as structured data.
+    pub all_assistant_texts: Vec<String>,
 }
 
 /// Execute a ceremony flow using Kahn's topological sort with parallel level execution.
@@ -152,6 +156,7 @@ pub async fn execute_flow(
                     supervisor_decisions: vec![],
                     rubber_duck_sessions: vec![],
                     builder_output: None,
+                    all_assistant_texts: vec![],
                 },
             );
         }
@@ -221,6 +226,7 @@ pub async fn execute_flow(
                                 supervisor_decisions: vec![],
                                 rubber_duck_sessions: vec![],
                                 builder_output: None,
+                                all_assistant_texts: vec![],
                             })
                         }
                     };
@@ -236,6 +242,7 @@ pub async fn execute_flow(
                             supervisor_decisions: vec![],
                             rubber_duck_sessions: vec![],
                             builder_output: None,
+                            all_assistant_texts: vec![],
                         });
                     }
 
@@ -469,6 +476,7 @@ async fn execute_node(
             supervisor_decisions: vec![],
             rubber_duck_sessions: vec![],
             builder_output: None,
+            all_assistant_texts: vec![],
         }),
 
         CeremonyNodeType::Harness | CeremonyNodeType::Agent => {
@@ -514,6 +522,7 @@ async fn execute_node(
                         supervisor_decisions: vec![],
                         rubber_duck_sessions: vec![],
                         builder_output: None,
+                    all_assistant_texts: vec![],
                     });
                 }
             }
@@ -592,6 +601,7 @@ async fn execute_node(
                     supervisor_decisions: vec![],
                     rubber_duck_sessions: vec![],
                     builder_output: None,
+                    all_assistant_texts: vec![],
                 })
             } else {
                 // ── Standard single-session dispatch ──────────────────
@@ -629,6 +639,7 @@ async fn execute_node(
                     supervisor_decisions: vec![],
                     rubber_duck_sessions: vec![],
                     builder_output: None,
+                    all_assistant_texts: result.all_assistant_texts,
                 })
             }
         }
@@ -673,6 +684,7 @@ async fn execute_node(
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
                 builder_output: None,
+                all_assistant_texts: vec![],
             })
         }
 
@@ -859,6 +871,7 @@ async fn execute_node(
                     supervisor_decisions: all_decisions,
                     rubber_duck_sessions: all_rubber_ducks,
                     builder_output,
+                    all_assistant_texts: vec![],
                 })
             } else {
                 // ── Single-session dispatch (original behavior) ───────
@@ -896,6 +909,7 @@ async fn execute_node(
                     supervisor_decisions: supervised.decisions,
                     rubber_duck_sessions: supervised.rubber_duck_sessions,
                     builder_output: None,
+                    all_assistant_texts: supervised.executor_result.all_assistant_texts,
                 })
             }
         }
@@ -912,6 +926,7 @@ async fn execute_node(
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
                 builder_output: None,
+                all_assistant_texts: vec![],
             })
         }
 
@@ -925,6 +940,7 @@ async fn execute_node(
             supervisor_decisions: vec![],
             rubber_duck_sessions: vec![],
             builder_output: None,
+            all_assistant_texts: vec![],
         }),
 
         CeremonyNodeType::Deploy => execute_deploy_node(node, ctx, sink).await,
@@ -1262,6 +1278,7 @@ async fn execute_deploy_node(
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
                 builder_output: None,
+                all_assistant_texts: vec![],
             });
         }
     };
@@ -1487,6 +1504,7 @@ async fn execute_deploy_node(
         supervisor_decisions: vec![],
         rubber_duck_sessions: vec![],
         builder_output: None,
+        all_assistant_texts: vec![],
     })
 }
 
@@ -1515,6 +1533,7 @@ async fn execute_promote_node(
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
                 builder_output: None,
+                all_assistant_texts: vec![],
             });
         }
     };
@@ -1573,6 +1592,7 @@ async fn execute_promote_node(
                 supervisor_decisions: vec![],
                 rubber_duck_sessions: vec![],
                 builder_output: None,
+                all_assistant_texts: vec![],
             }
         }
         Ok(r) => {
@@ -1742,6 +1762,7 @@ fn deploy_failed(node: &CeremonyNode, reason: &str) -> NodeResult {
         supervisor_decisions: vec![],
         rubber_duck_sessions: vec![],
         builder_output: None,
+        all_assistant_texts: vec![],
     }
 }
 

@@ -1044,6 +1044,20 @@ fn create_backlog_from_retro(
     }
 }
 
+/// Try to extract a stories JSON array from a text block.
+/// Handles both direct JSON arrays and `{"stories": [...]}` wrapper objects.
+fn extract_stories_json(text: &str) -> Option<Vec<serde_json::Value>> {
+    if let Some(arr) = crate::json_extract::extract_json_array(text) {
+        return Some(arr);
+    }
+    if let Some(obj) = crate::json_extract::extract_json_object(text) {
+        if let Some(arr) = obj.get("stories").and_then(|s| s.as_array()) {
+            return Some(arr.clone());
+        }
+    }
+    None
+}
+
 /// Write planning data (ACs, tasks, deps) back to story records in DB.
 /// This is the key mechanism for reference-based data flow: planner output gets persisted
 /// TO the story, so future sprints see pre-planned stories and skip re-planning.
@@ -1065,22 +1079,35 @@ async fn write_groom_results_to_stories(
         return;
     }
 
-    // Parse groomer's JSON array output (may be wrapped in markdown fences)
-    let stories: Vec<serde_json::Value> = match crate::json_extract::extract_json_array(output) {
+    // Parse groomer's JSON array output (may be wrapped in markdown fences).
+    // First try the primary output (final result text), then fall back to
+    // searching ALL assistant text blocks from the session — the groomer often
+    // produces its JSON array mid-conversation, not in the final message.
+    let stories: Vec<serde_json::Value> = match extract_stories_json(output) {
         Some(arr) => arr,
         None => {
-            // Try extracting a JSON object that might contain a "stories" key
-            if let Some(obj) = crate::json_extract::extract_json_object(output) {
-                match obj.get("stories").and_then(|s| s.as_array()) {
-                    Some(arr) => arr.clone(),
-                    None => {
-                        tracing::warn!("Could not extract stories array from groom output");
-                        return;
-                    }
+            // Fallback: search all assistant text blocks for the JSON array
+            tracing::info!("Primary output not JSON — searching all assistant text blocks");
+            let mut found = None;
+            for text in groom_result.all_assistant_texts.iter().rev() {
+                if let Some(arr) = extract_stories_json(text) {
+                    tracing::info!(
+                        block_len = text.len(),
+                        stories = arr.len(),
+                        "Found stories JSON in assistant text block"
+                    );
+                    found = Some(arr);
+                    break;
                 }
-            } else {
-                tracing::warn!("Could not parse groom output as JSON array or object");
-                return;
+            }
+            match found {
+                Some(arr) => arr,
+                None => {
+                    tracing::warn!(
+                        "Could not parse groom output as JSON from result or any assistant text block"
+                    );
+                    return;
+                }
             }
         }
     };

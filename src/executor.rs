@@ -46,6 +46,11 @@ pub struct ExecutorResult {
     pub last_tool_use: Option<String>,
     /// Structured messages sent by the subprocess via SendUserMessage tool
     pub user_messages: Vec<String>,
+    /// All text blocks from every assistant message in the session.
+    /// The `result_text` only captures the final result, but structured output
+    /// (like JSON arrays from the groomer) often appears in earlier messages.
+    /// Consumers should search these when `result_text` fails to parse.
+    pub all_assistant_texts: Vec<String>,
 }
 
 pub fn build_command(config: &ExecutorConfig) -> Command {
@@ -128,6 +133,7 @@ pub async fn execute(
     let mut stop_hook_fired = false;
     let mut last_tool_use = None;
     let mut user_messages: Vec<String> = Vec::new();
+    let mut all_assistant_texts: Vec<String> = Vec::new();
     let heartbeat = Duration::from_secs(config.heartbeat_timeout_secs);
 
     loop {
@@ -161,6 +167,14 @@ pub async fn execute(
                                 }
                                 StreamEvent::Assistant { message } => {
                                     for block in &message.content {
+                                        // Collect all text blocks for downstream JSON extraction.
+                                        // Structured output (JSON arrays/objects) from agents often
+                                        // appears in mid-conversation messages, not the final result.
+                                        if let stream::ContentBlock::Text { text } = block {
+                                            if !text.trim().is_empty() {
+                                                all_assistant_texts.push(text.clone());
+                                            }
+                                        }
                                         // Check for SendUserMessage tool (--brief mode)
                                         if let Some(msg) = stream::extract_user_message(block) {
                                             tracing::info!(message = %msg, "Agent status update (SendUserMessage)");
@@ -229,5 +243,6 @@ pub async fn execute(
         stop_hook_fired,
         last_tool_use,
         user_messages,
+        all_assistant_texts,
     })
 }
