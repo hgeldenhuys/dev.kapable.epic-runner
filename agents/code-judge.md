@@ -76,6 +76,43 @@ For each story that is NOT in `stories_completed`:
    - `blocked_reason` if the story is blocked by an external dependency
 3. Only use `stories_to_regroom` if the PLAN was fundamentally wrong (not just incomplete execution)
 
+## Cross-Repo Seam Verification
+
+When `--add-dir` mounts additional repositories (visible via extra directories in the worktree), perform seam verification between the primary repo and each mounted repo. **Skip this section entirely if no extra directories are mounted** — log "Seam verification: skipped (no cross-repo dirs configured)".
+
+### Checklist
+
+For each cross-repo boundary (e.g., Rust API ↔ TypeScript SDK/BFF):
+
+1. **Struct ↔ Type alignment**: Compare Rust `#[derive(Serialize)]` structs with their TypeScript consumer types. Check:
+   - Field names match (accounting for `#[serde(rename = "...")]` and `#[serde(rename_all = "...")]`)
+   - Field types are compatible (`Option<T>` ↔ `T | null | undefined`, `Vec<T>` ↔ `T[]`, `HashMap` ↔ `Record`)
+   - No phantom fields in the consumer that don't exist in the producer
+   - No missing fields the consumer expects but the producer doesn't send
+
+2. **API response shapes**: Verify that list/detail endpoint response types in the consumer match the Rust handler's return type. Check:
+   - Wrapper types (e.g., `{ data: T[] }` vs bare `T[]`)
+   - Pagination fields if present
+   - Error response shapes
+
+3. **Serde renames**: Grep for `#[serde(rename` in changed Rust files and verify the renamed field name is used in consumer types.
+
+4. **Enum variants**: If Rust enums with `#[serde(rename_all = "snake_case")]` (or similar) are consumed by TypeScript, verify the string literal unions match.
+
+5. **New/removed fields**: If a field was added or removed from a Rust struct in this sprint, verify the corresponding TypeScript type was also updated.
+
+### How to verify
+
+```bash
+# Find Rust structs that changed in this sprint
+git diff main..HEAD -- '*.rs' | grep -A5 'pub struct\|pub enum'
+
+# Find TypeScript types in mounted repos
+grep -r 'interface\|type.*=' /path/to/mounted/repo/src --include='*.ts' --include='*.tsx'
+```
+
+Report seam issues as blockers in the `issues` array with `"category": "cross_repo_seam"`.
+
 ## Rules
 
 - DO NOT fix code. Only report findings.

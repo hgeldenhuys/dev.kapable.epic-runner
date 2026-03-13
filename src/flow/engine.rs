@@ -1934,7 +1934,11 @@ fn build_executor_config(
             Uuid::new_v4()
         },
         repo_path: ctx.repo_path.clone(),
-        add_dirs: ctx.add_dirs.clone(),
+        add_dirs: {
+            let mut dirs = ctx.add_dirs.clone();
+            dirs.extend(c.cross_repo_dirs.iter().cloned());
+            dirs
+        },
         system_prompt: c
             .system_prompt
             .as_ref()
@@ -2236,6 +2240,134 @@ mod tests {
         assert!(
             restored.completed_nodes[0].duration_seconds.is_none(),
             "old checkpoints without duration_seconds should deserialize as None"
+        );
+    }
+
+    /// Helper: build a minimal FlowContext for unit tests.
+    fn test_flow_context(add_dirs: Vec<String>) -> FlowContext {
+        use chrono::Utc;
+        FlowContext {
+            epic: crate::types::Epic {
+                id: Uuid::new_v4(),
+                product_id: Uuid::new_v4(),
+                code: "TEST-001".to_string(),
+                domain: "test".to_string(),
+                instance: 1,
+                title: "Test Epic".to_string(),
+                intent: "test intent".to_string(),
+                success_criteria: None,
+                status: crate::types::EpicStatus::Active,
+                worktree_name: "TEST-001".to_string(),
+                created_at: Utc::now(),
+                closed_at: None,
+            },
+            sprint: crate::types::Sprint {
+                id: Uuid::new_v4(),
+                epic_id: Uuid::new_v4(),
+                number: 1,
+                session_id: Uuid::new_v4(),
+                status: crate::types::SprintStatus::Executing,
+                goal: None,
+                system_prompt: None,
+                stories: None,
+                ceremony_log: None,
+                rubber_duck_insights: None,
+                velocity: None,
+                cost_usd: None,
+                ceremony_costs: None,
+                started_at: None,
+                finished_at: None,
+                heartbeat_at: None,
+                created_at: Utc::now(),
+            },
+            stories: serde_json::json!([]),
+            repo_path: "/tmp/test-repo".to_string(),
+            default_branch: "main".to_string(),
+            model_override: None,
+            effort_override: None,
+            budget_override: None,
+            add_dirs,
+            previous_learnings: String::new(),
+            product_brief: String::new(),
+            product_definition_of_done: String::new(),
+            current_story: None,
+        }
+    }
+
+    /// Verifies that cross_repo_dirs from the node config are merged with
+    /// flow-level add_dirs when building ExecutorConfig.
+    #[test]
+    fn cross_repo_dirs_forwarded_to_executor_config() {
+        let ctx = test_flow_context(vec!["../existing-dir".to_string()]);
+        let node = CeremonyNode {
+            key: "judge_code".to_string(),
+            node_type: CeremonyNodeType::Agent,
+            label: "Code Judge".to_string(),
+            config: CeremonyNodeConfig {
+                cross_repo_dirs: vec![
+                    "../dev.kapable.console".to_string(),
+                    "../dev.kapable.sdk".to_string(),
+                ],
+                ..Default::default()
+            },
+            always_run: true,
+        };
+        let all_results = HashMap::new();
+        let config = build_executor_config(&node, &ctx, "", &all_results);
+
+        assert_eq!(
+            config.add_dirs,
+            vec![
+                "../existing-dir".to_string(),
+                "../dev.kapable.console".to_string(),
+                "../dev.kapable.sdk".to_string(),
+            ],
+            "cross_repo_dirs should be appended to flow-level add_dirs"
+        );
+    }
+
+    /// Verifies that empty cross_repo_dirs does not affect the existing add_dirs.
+    #[test]
+    fn empty_cross_repo_dirs_preserves_existing_add_dirs() {
+        let ctx = test_flow_context(vec!["../existing-dir".to_string()]);
+        let node = CeremonyNode {
+            key: "execute".to_string(),
+            node_type: CeremonyNodeType::Loop,
+            label: "Execute".to_string(),
+            config: CeremonyNodeConfig::default(),
+            always_run: false,
+        };
+        let all_results = HashMap::new();
+        let config = build_executor_config(&node, &ctx, "", &all_results);
+
+        assert_eq!(
+            config.add_dirs,
+            vec!["../existing-dir".to_string()],
+            "empty cross_repo_dirs should not modify existing add_dirs"
+        );
+    }
+
+    /// Verifies that cross_repo_dirs works when flow-level add_dirs is empty.
+    #[test]
+    fn cross_repo_dirs_with_no_flow_level_dirs() {
+        let ctx = test_flow_context(vec![]);
+        let node = CeremonyNode {
+            key: "judge_code".to_string(),
+            node_type: CeremonyNodeType::Agent,
+            label: "Code Judge".to_string(),
+            config: CeremonyNodeConfig {
+                cross_repo_dirs: vec!["../dev.kapable.console".to_string()],
+                ..Default::default()
+            },
+            always_run: true,
+        };
+        let all_results = HashMap::new();
+        let config = build_executor_config(&node, &ctx, "", &all_results);
+
+        assert_eq!(
+            config.add_dirs,
+            vec!["../dev.kapable.console".to_string()],
+            "cross_repo_dirs alone should populate add_dirs"
         );
     }
 }

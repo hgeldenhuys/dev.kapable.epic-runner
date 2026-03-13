@@ -70,6 +70,10 @@ nodes:
       heartbeat_timeout_secs: 180
       max_turns: 12
       agent: code-judge
+      # Mount consuming repos (read-only) for cross-repo seam verification.
+      # Override per-product in .epic-runner/config.yaml or via custom flow YAML.
+      # Example: ["../dev.kapable.console", "../dev.kapable.sdk"]
+      cross_repo_dirs: []
       system_prompt: |
         Judging sprint {{sprint.number}} of epic {{epic.code}}.
         Intent: {{epic.intent}}

@@ -87,6 +87,11 @@ pub struct CeremonyNodeConfig {
     pub deploy_production_url: Option<String>,
     /// Deploy node: standby URL for A/B judge comparison
     pub deploy_standby_url: Option<String>,
+    /// Additional repo directories to mount (read-only) via --add-dir.
+    /// Used by the judge node to verify cross-repo data contracts (e.g., Rust struct ↔ TS type).
+    /// These are merged with the flow-level add_dirs when building ExecutorConfig.
+    #[serde(default)]
+    pub cross_repo_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
