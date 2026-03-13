@@ -7,7 +7,7 @@ use crate::api_client::{ApiClient, DataWrapper};
 use crate::types::Story;
 
 /// Generate the next sequential story code for a product.
-/// Fetches the product prefix and counts existing stories to derive `{PREFIX}-{NNN}`.
+/// Parses the max existing code number to derive `{PREFIX}-{NNN}`.
 pub async fn next_story_code(
     client: &ApiClient,
     product_id: &str,
@@ -21,12 +21,18 @@ pub async fn next_story_code(
     let prefix = product_data["story_prefix"].as_str().unwrap_or("S");
 
     let all_stories: DataWrapper<Vec<serde_json::Value>> = client.get("/v1/stories").await?;
-    let story_count = all_stories
+    let max_num = all_stories
         .data
         .iter()
         .filter(|s| s["product_id"].as_str() == Some(product_id))
-        .count();
-    Ok(format!("{}-{:03}", prefix, story_count + 1))
+        .filter_map(|s| {
+            let code = s["code"].as_str()?;
+            let suffix = code.strip_prefix(prefix)?.strip_prefix('-')?;
+            suffix.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0);
+    Ok(format!("{}-{:03}", prefix, max_num + 1))
 }
 
 #[derive(Args)]
