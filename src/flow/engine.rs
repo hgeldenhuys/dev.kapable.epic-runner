@@ -650,10 +650,69 @@ async fn execute_node(
                         config.resume_session = true;
                     }
 
+                    // Inject story-specific context as fallback for dead/compacted sessions.
+                    // Even if session resume gives no conversation history, the scrum master
+                    // needs material to produce a meaningful retro.
+                    let mut extra_context = String::new();
+
+                    // Extract builder output for this specific story
+                    if let Some(execute_result) = upstream.get("execute") {
+                        if let Some(ref output) = execute_result.output {
+                            // Builder output may contain multiple stories — extract this one
+                            if output.contains(story_code) || stories.len() == 1 {
+                                extra_context.push_str(&format!(
+                                    "\n\n## Builder Output for {story_code}\n{output}"
+                                ));
+                            }
+                        }
+                    }
+
+                    // Extract judge verdict (especially story_updates for this story)
+                    if let Some(judge_result) = upstream.get("judge_code") {
+                        if let Some(ref verdict) = judge_result.judge_verdict {
+                            extra_context.push_str(&format!(
+                                "\n\n## Judge Verdict\nIntent satisfied: {}\nMission progress: {}%\nSummary: {}",
+                                verdict.intent_satisfied,
+                                verdict.mission_progress.unwrap_or(0.0),
+                                verdict.summary
+                            ));
+                            // Include story-specific updates from the judge
+                            if let Some(ref updates) = verdict.story_updates {
+                                for update in updates {
+                                    if update.code == story_code {
+                                        extra_context.push_str(&format!(
+                                            "\n\nJudge feedback for {}: {}",
+                                            story_code,
+                                            update.reason.as_deref().unwrap_or("(no reason)")
+                                        ));
+                                        if update.blocked {
+                                            extra_context.push_str(&format!(
+                                                "\nBlocked: {}",
+                                                update
+                                                    .blocked_reason
+                                                    .as_deref()
+                                                    .unwrap_or("(no reason)")
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Append fallback context to the prompt
+                    if !extra_context.is_empty() {
+                        config.prompt.push_str(&format!(
+                            "\n\n--- Fallback Context (use if session history is empty) ---{}",
+                            extra_context
+                        ));
+                    }
+
                     tracing::info!(
                         story_id,
                         story_code,
                         node = %node.key,
+                        has_fallback = !extra_context.is_empty(),
                         "Per-story resume (retro interview)"
                     );
 

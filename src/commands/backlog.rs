@@ -90,6 +90,36 @@ pub enum BacklogAction {
     },
     /// Delete a story
     Delete { id: String },
+    /// Mark a task as done (updates API + local story file)
+    #[command(name = "task-done")]
+    TaskDone {
+        /// Story code or ID (e.g. "ER-042")
+        story: String,
+        /// Zero-based task index
+        index: usize,
+        /// Optional outcome note
+        #[arg(long)]
+        outcome: Option<String>,
+    },
+    /// Mark an acceptance criterion as verified (updates API + local story file)
+    #[command(name = "ac-verify")]
+    AcVerify {
+        /// Story code or ID (e.g. "ER-042")
+        story: String,
+        /// Zero-based AC index
+        index: usize,
+        /// Optional evidence (test output, screenshot path, etc.)
+        #[arg(long)]
+        evidence: Option<String>,
+    },
+    /// Mark a story as blocked with a reason
+    Block {
+        /// Story code or ID (e.g. "ER-042")
+        story: String,
+        /// Why the story is blocked
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 pub async fn run(
@@ -238,9 +268,127 @@ pub async fn run(
             client.delete(&format!("/v1/stories/{full_id}")).await?;
             eprintln!("Story {id} deleted");
         }
+        BacklogAction::TaskDone {
+            story,
+            index,
+            outcome,
+        } => {
+            let full_id = resolve_story_id(client, &story).await?;
+            let resp: serde_json::Value = client.get(&format!("/v1/stories/{full_id}")).await?;
+
+            let mut tasks: Vec<serde_json::Value> =
+                resp["tasks"].as_array().cloned().unwrap_or_default();
+
+            if index >= tasks.len() {
+                return Err(format!(
+                    "Task index {index} out of range (story has {} tasks)",
+                    tasks.len()
+                )
+                .into());
+            }
+
+            tasks[index]["done"] = json!(true);
+            if let Some(o) = &outcome {
+                tasks[index]["outcome"] = json!(o);
+            }
+
+            let body = json!({ "tasks": tasks, "updated_at": chrono::Utc::now().to_rfc3339() });
+            let _: serde_json::Value = client
+                .patch(&format!("/v1/stories/{full_id}"), &body)
+                .await?;
+
+            // Update local story file if available (for stop hook)
+            update_local_story_file(&body);
+
+            let desc = tasks[index]["description"].as_str().unwrap_or("(unnamed)");
+            eprintln!("Task {index} marked done: {desc}");
+        }
+        BacklogAction::AcVerify {
+            story,
+            index,
+            evidence,
+        } => {
+            let full_id = resolve_story_id(client, &story).await?;
+            let resp: serde_json::Value = client.get(&format!("/v1/stories/{full_id}")).await?;
+
+            let mut acs: Vec<serde_json::Value> = resp["acceptance_criteria"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+
+            if index >= acs.len() {
+                return Err(format!(
+                    "AC index {index} out of range (story has {} ACs)",
+                    acs.len()
+                )
+                .into());
+            }
+
+            acs[index]["verified"] = json!(true);
+            if let Some(e) = &evidence {
+                acs[index]["evidence"] = json!(e);
+            }
+
+            let body = json!({ "acceptance_criteria": acs, "updated_at": chrono::Utc::now().to_rfc3339() });
+            let _: serde_json::Value = client
+                .patch(&format!("/v1/stories/{full_id}"), &body)
+                .await?;
+
+            update_local_story_file(&body);
+
+            let criterion = acs[index]["criterion"]
+                .as_str()
+                .or_else(|| acs[index]["title"].as_str())
+                .unwrap_or("(unnamed)");
+            eprintln!("AC {index} verified: {criterion}");
+        }
+        BacklogAction::Block { story, reason } => {
+            let full_id = resolve_story_id(client, &story).await?;
+            let body = json!({
+                "status": "blocked",
+                "blocked_reason": reason,
+                "updated_at": chrono::Utc::now().to_rfc3339()
+            });
+            let _: serde_json::Value = client
+                .patch(&format!("/v1/stories/{full_id}"), &body)
+                .await?;
+
+            update_local_story_file(&body);
+
+            eprintln!("Story {story} blocked: {reason}");
+        }
     }
 
     Ok(())
+}
+
+/// Update the local story JSON file with partial fields from a PATCH.
+/// The stop hook reads this file — keeping it in sync lets the hook
+/// see task/AC updates without another API call.
+fn update_local_story_file(patch: &serde_json::Value) {
+    let story_file = match std::env::var("EPIC_RUNNER_STORY_FILE") {
+        Ok(f) if !f.is_empty() => f,
+        _ => return,
+    };
+    let path = std::path::Path::new(&story_file);
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(mut story) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    // Merge patch fields into existing story
+    if let Some(obj) = patch.as_object() {
+        for (k, v) in obj {
+            story[k] = v.clone();
+        }
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&story) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 /// Resolve a story identifier — accepts either a story code (e.g. "ER-042")
