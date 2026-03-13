@@ -251,6 +251,9 @@ pub async fn run(
         .map(|dod| serde_json::to_string_pretty(dod).unwrap_or_default())
         .unwrap_or_default();
 
+    // Build deploy instructions from story tags — maps frontend app tags to deploy curl commands
+    let deploy_instructions = build_deploy_instructions(&stories);
+
     let resolved_repo_path =
         crate::repo_resolver::resolve_product_repo(product.repo_url.as_deref(), &product.repo_path)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -273,6 +276,7 @@ pub async fn run(
         product_definition_of_done: product_dod,
         current_story: None,
         research_notes_content,
+        deploy_instructions,
     };
 
     // 8. Execute the ceremony flow (nodes at each BFS level run in parallel)
@@ -1010,6 +1014,62 @@ fn build_handoff_summary(
         "commit_hashes": all_commits,
         "cost_usd": total_cost,
     })
+}
+
+/// Build deploy instructions from story tags.
+/// Maps frontend app tags (console, admin, developer) to their Connect App Pipeline
+/// curl deploy commands. Returns empty string if no deploy-relevant tags are found.
+fn build_deploy_instructions(stories: &serde_json::Value) -> String {
+    let tag_to_app: &[(&str, &str, &str)] = &[
+        ("console", "Console", "9ee900e7-3d10-46f1-b59b-bade220cfaa4"),
+        ("admin", "Admin", "abee3d58-259b-4454-9147-df67c0b74de6"),
+        (
+            "developer",
+            "Developer Portal",
+            "81e66cfd-84fa-4cae-a497-2d7f07e8f801",
+        ),
+    ];
+
+    let mut matched_apps: Vec<(&str, &str)> = Vec::new();
+
+    if let Some(story_array) = stories.as_array() {
+        for story in story_array {
+            if let Some(tags) = story.get("tags").and_then(|t| t.as_array()) {
+                for tag in tags {
+                    if let Some(tag_str) = tag.as_str() {
+                        for &(tag_name, app_label, app_id) in tag_to_app {
+                            if tag_str == tag_name
+                                && !matched_apps.iter().any(|(_, id)| *id == app_id)
+                            {
+                                matched_apps.push((app_label, app_id));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if matched_apps.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from(
+        "## Deploy Instructions\n\
+         After committing and pushing your code, deploy the following app(s):\n",
+    );
+
+    for (label, app_id) in &matched_apps {
+        out.push_str(&format!(
+            "\n### {label}\n\
+             ```bash\n\
+             curl -sf -X POST \"https://api.kapable.dev/v1/apps/{app_id}/environments/production/deploy\" \\\n  \
+               -H \"x-api-key: sk_admin_61af775f967c434dbace3877ade456b8\"\n\
+             ```\n",
+        ));
+    }
+
+    out
 }
 
 /// Build the epic log from all previous sprints' handoff_summaries.

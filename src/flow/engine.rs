@@ -97,6 +97,11 @@ pub struct FlowContext {
     /// Combined markdown content of all research notes linked to sprint stories.
     /// Injected into the groomer agent via {{research_notes}} template variable.
     pub research_notes_content: String,
+    /// Deploy instructions for cross-product stories.
+    /// When story tags include frontend app names (console, admin, developer),
+    /// this contains the curl deploy commands so the builder can self-deploy.
+    /// Injected via {{deploy_instructions}} template variable.
+    pub deploy_instructions: String,
 }
 
 /// Result of executing one node.
@@ -2083,6 +2088,7 @@ fn build_executor_config(
 /// - {{epic_log}} — structured handoff summaries from all previous sprints (verdict, deploy, files, commits)
 /// - {{product.brief}} — product architecture, file map, conventions (cuts agent orientation cost)
 /// - {{product.definition_of_done}} — conditional DoD rules for the judge
+/// - {{deploy_instructions}} — curl deploy commands for cross-product stories (based on story tags)
 fn interpolate(
     template: &str,
     ctx: &FlowContext,
@@ -2175,6 +2181,7 @@ fn interpolate(
             &serde_json::to_string_pretty(&ctx.stories).unwrap_or_default(),
         )
         .replace("{{story}}", &current_story_json)
+        .replace("{{deploy_instructions}}", &ctx.deploy_instructions)
 }
 
 /// Get the checkpoint file path for a sprint session.
@@ -2410,6 +2417,7 @@ mod tests {
             product_definition_of_done: String::new(),
             current_story: None,
             research_notes_content: String::new(),
+            deploy_instructions: String::new(),
         }
     }
 

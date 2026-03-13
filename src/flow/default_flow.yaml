@@ -44,6 +44,8 @@ nodes:
 
         {{epic_log}}
 
+        {{deploy_instructions}}
+
         Your story:
         {{story}}
 
