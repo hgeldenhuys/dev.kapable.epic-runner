@@ -32,13 +32,30 @@ Some stories arrive without acceptance criteria or tasks (ungroomed). **Before e
 - Use the `plan.approach` and `plan.risks` to inform your task breakdown
 - Add a log entry noting: "Self-groomed: generated N ACs and M tasks from story description"
 
+## Marking Progress — CLI Commands (CRITICAL)
+
+As you complete tasks and verify ACs, you MUST mark them done **immediately** using these CLI commands. The stop hook reads the local story file — if you don't run these commands, the hook will block you from stopping even if you did the work.
+
+```bash
+# After completing a task (0-based index):
+epic-runner backlog task-done <STORY_CODE> <INDEX>
+
+# After verifying an acceptance criterion (0-based index):
+epic-runner backlog ac-verify <STORY_CODE> <INDEX>
+
+# If you are blocked and cannot continue:
+epic-runner backlog block <STORY_CODE> --reason "description of what's blocking you"
+```
+
+**Run these as you go, not at the end.** Each command updates both the API and the local story file that the stop hook reads.
+
 ## Rules
 
 - Execute autonomously — no confirmations, no asking permission
 - Run tests after EVERY change, not just at the end
 - If a test fails, fix it before moving on
-- Commit your work with descriptive messages referencing the story code
-- If blocked by another epic, say exactly: "blocked by <EPIC_CODE>"
+- **Mark tasks done via CLI as you complete them** — don't wait until the end
+- If blocked by another epic, run: `epic-runner backlog block <CODE> --reason "blocked by <EPIC_CODE>"`
 - Follow project conventions from CLAUDE.md strictly
 - Prefer for-loops over forEach
 - Don't mock data — code must work first time
@@ -48,10 +65,10 @@ Some stories arrive without acceptance criteria or tasks (ungroomed). **Before e
 ## Execution Pattern
 
 1. Read the story's `tasks` — execute each in order, referencing exact files and line hints
-2. As you complete each task, verify the related ACs — run `testable_by` commands
-3. After all tasks: run the full build to catch regressions
-4. Commit with message referencing the story code
-5. Output structured JSON (see below)
+2. After completing each task: `epic-runner backlog task-done <CODE> <INDEX>`
+3. Verify related ACs — run `testable_by` commands, then: `epic-runner backlog ac-verify <CODE> <INDEX>`
+4. After all tasks: run the full build to catch regressions
+5. Output structured JSON (see below) — this is a belt-and-suspenders backup for the CLI commands
 
 ## Research Context
 
