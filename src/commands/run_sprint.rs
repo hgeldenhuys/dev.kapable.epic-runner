@@ -39,6 +39,18 @@ pub async fn run(
     client: &ApiClient,
     _cli: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // 0. PRE-FLIGHT: Verify credentials before starting any work.
+    // This is the child process's own auth check — catches credential forwarding
+    // failures immediately instead of failing mid-ceremony (AUTH-002 / ER-024).
+    client.verify_auth().await.map_err(|e| {
+        format!(
+            "Sprint-run pre-flight auth failed — credentials were not forwarded correctly.\n\
+             Cause: {e}\n\
+             This likely means the orchestrator did not pass --key or the key is invalid."
+        )
+    })?;
+    tracing::info!("Pre-flight auth check passed in child process");
+
     // 1. Load sprint from DB
     let sprint_resp: serde_json::Value = client
         .get(&format!("/v1/er_sprints/{}", args.sprint_id))

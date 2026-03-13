@@ -384,6 +384,132 @@ async fn payment_required_mentions_usage() {
     assert!(msg.contains("quota") || msg.contains("usage"));
 }
 
+// ── Pre-flight auth check (verify_auth) ─────────
+
+#[tokio::test]
+async fn verify_auth_succeeds_with_valid_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .and(header("x-api-key", "sk_test_abc123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": []
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    // Should succeed without error
+    client.verify_auth().await.unwrap();
+}
+
+#[tokio::test]
+async fn verify_auth_fails_on_401_invalid_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("invalid api key"))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let result = client.verify_auth().await;
+    assert!(matches!(result, Err(ApiError::Auth(_))));
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("401"), "Error should mention 401 status");
+}
+
+#[tokio::test]
+async fn verify_auth_fails_on_403_forbidden() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("key lacks permission"))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let result = client.verify_auth().await;
+    assert!(matches!(result, Err(ApiError::Auth(_))));
+}
+
+#[tokio::test]
+async fn verify_auth_sends_correct_api_key_header() {
+    let server = MockServer::start().await;
+    // Only match if the correct x-api-key header is present
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .and(header("x-api-key", "sk_test_abc123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    // If the header is wrong, wiremock returns 404 (no matching mock),
+    // which would cause verify_auth to return an error
+    client.verify_auth().await.unwrap();
+}
+
+#[tokio::test]
+async fn verify_auth_retries_on_transient_500() {
+    let server = MockServer::start().await;
+
+    // First request: 500 (transient)
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("temporary failure"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Second request: success
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    // Should succeed after retry
+    client.verify_auth().await.unwrap();
+}
+
+#[tokio::test]
+async fn verify_auth_child_process_gets_same_credentials() {
+    // Simulates the orchestrator creating a client, extracting the key,
+    // and creating a child client with the same credentials — both should pass.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .and(header("x-api-key", "sk_live_forwarded_key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .mount(&server)
+        .await;
+
+    // Parent client (orchestrator)
+    let parent = ApiClient::new(&server.uri(), "sk_live_forwarded_key");
+    parent.verify_auth().await.unwrap();
+
+    // Child client (sprint-run) — constructed from parent's credentials
+    let child = ApiClient::new(&server.uri(), parent.api_key());
+    child.verify_auth().await.unwrap();
+}
+
+#[tokio::test]
+async fn verify_auth_fails_with_empty_key() {
+    let server = MockServer::start().await;
+    // Server rejects empty key with 401
+    Mock::given(method("GET"))
+        .and(path("/v1/epics"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("missing api key"))
+        .mount(&server)
+        .await;
+
+    let client = ApiClient::new(&server.uri(), "");
+    let result = client.verify_auth().await;
+    assert!(matches!(result, Err(ApiError::Auth(_))));
+}
+
 // ── PUT + header verification ────────────────────────
 
 #[tokio::test]

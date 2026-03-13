@@ -129,6 +129,30 @@ impl ApiClient {
 
     // ── Public HTTP methods ────────────────────────────────────────────
 
+    /// Pre-flight auth check: verify the API key is valid by hitting a lightweight
+    /// endpoint. Returns Ok(()) on success, or an ApiError::Auth on 401/403.
+    ///
+    /// This MUST be called before spawning child processes or starting expensive
+    /// ceremony work. Catches invalid/missing credential forwarding early instead
+    /// of wasting sprints on 401 failures (see AUTH-002 / ER-024).
+    pub async fn verify_auth(&self) -> Result<(), ApiError> {
+        // Use GET /v1/epics?limit=1 as a cheap auth probe — it's a table every
+        // project has, and the limit keeps the payload minimal. Any authenticated
+        // endpoint would work; this one is guaranteed to exist.
+        let url = format!("{}{}", self.base_url, "/v1/epics?limit=1");
+        let key = self.api_key.clone();
+        let resp = self
+            .send_with_retry(|| self.client.get(&url).header("x-api-key", &key))
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(self.status_to_error(status, body))
+        }
+    }
+
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", self.base_url, path);
         let key = self.api_key.clone();

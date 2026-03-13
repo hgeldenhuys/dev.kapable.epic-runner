@@ -63,6 +63,26 @@ pub async fn run(
         return Err("claude CLI not found in PATH".into());
     }
 
+    // Verify API credentials before doing any work. This catches invalid keys,
+    // expired tokens, and misconfigured credential forwarding BEFORE we create
+    // sprints or spawn child processes. Without this, invalid creds cause the
+    // child process to 401 on its first API call — wasting an entire sprint
+    // record each time (see AUTH-002: 5 sprints burned on VALIDATE-001).
+    eprintln!("{} Verifying API credentials...", "[preflight]".dimmed());
+    client.verify_auth().await.map_err(|e| {
+        format!(
+            "Pre-flight auth check failed — refusing to start orchestration.\n\
+             Cause: {e}\n\
+             Fix: Check --key flag, KAPABLE_DATA_KEY env var, or .epic-runner/config.toml"
+        )
+    })?;
+    let key_prefix: String = client.api_key().chars().take(12).collect();
+    eprintln!(
+        "{} API credentials verified ({}...)",
+        "[preflight]".dimmed(),
+        key_prefix.dimmed()
+    );
+
     // Lock file with dead PID detection
     let lock_dir = std::path::Path::new(".epic-runner");
     let lock_outcome = crate::lock::acquire_epic_lock(lock_dir, &args.epic_code)?;
