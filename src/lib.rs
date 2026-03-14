@@ -11,6 +11,8 @@ pub mod impediments;
 pub mod json_extract;
 pub mod judge;
 pub mod lock;
+pub mod pipeline_generator;
+pub mod pipeline_submitter;
 pub mod repo_resolver;
 pub mod scrum_master;
 pub mod stream;

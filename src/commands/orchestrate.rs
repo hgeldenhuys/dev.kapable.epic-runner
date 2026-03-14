@@ -56,6 +56,10 @@ pub struct OrchestrateArgs {
     /// Directory for log files (daemon mode — stdout/stderr redirected to disk)
     #[arg(long, default_value = ".epic-runner/logs")]
     pub log_dir: String,
+
+    /// Execution engine: "ceremony" (default, legacy flow) or "pipeline" (distributed agent)
+    #[arg(long, default_value = "ceremony")]
+    pub engine: String,
 }
 
 pub async fn run(
@@ -410,6 +414,35 @@ pub async fn run(
                     &json!({ "status": "planned" }),
                 )
                 .await;
+        }
+
+        // ── Pipeline engine branch ──
+        if args.engine == "pipeline" {
+            let pipeline_result = run_pipeline_engine(
+                &args, client, &epic, sprint_num, session_id, sprint_id, &batch,
+            )
+            .await;
+
+            match pipeline_result {
+                Ok(()) => {
+                    eprintln!(
+                        "{}",
+                        format!("Pipeline sprint {sprint_num} completed successfully")
+                            .green()
+                            .bold()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        format!("Pipeline sprint {sprint_num} failed: {e}")
+                            .red()
+                            .bold()
+                    );
+                }
+            }
+            // Pipeline mode runs one sprint at a time; continue the outer loop
+            continue;
         }
 
         // SPAWN SPRINT RUNNER AS CHILD PROCESS (with retry loop for transient failures)
@@ -1459,3 +1492,157 @@ fn setup_log_redirect(
 }
 
 // detect_default_branch is now `pub fn` in crate::flow::engine — use that instead.
+
+/// Execute a sprint via the pipeline engine instead of the ceremony child process.
+///
+/// Generates a PipelineDefinition from the sprint's stories, submits it to the
+/// platform API, and polls until completion.
+#[allow(clippy::too_many_arguments)]
+async fn run_pipeline_engine(
+    args: &OrchestrateArgs,
+    client: &ApiClient,
+    epic: &Epic,
+    sprint_num: i32,
+    session_id: Uuid,
+    sprint_id: &str,
+    stories: &[&serde_json::Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::pipeline_generator::{
+        generate_sprint_pipeline, SprintPipelineContext, StoryContext,
+    };
+    use crate::pipeline_submitter::{submit_pipeline, wait_for_completion};
+
+    eprintln!(
+        "[pipeline] Generating pipeline for sprint {}...",
+        sprint_num
+    );
+
+    // Convert stories to StoryContext
+    let mut story_contexts: Vec<StoryContext> = Vec::new();
+    for s in stories {
+        story_contexts.push(StoryContext {
+            code: s["code"].as_str().unwrap_or("?").to_string(),
+            id: s["id"]
+                .as_str()
+                .unwrap_or(&Uuid::new_v4().to_string())
+                .to_string(),
+            title: s["title"].as_str().unwrap_or("").to_string(),
+            description: s["description"].as_str().unwrap_or("").to_string(),
+            acceptance_criteria: s["acceptance_criteria"]
+                .as_array()
+                .map(|a| {
+                    let mut v = Vec::new();
+                    for item in a {
+                        if let Some(text) = item.as_str() {
+                            v.push(text.to_string());
+                        }
+                    }
+                    v
+                })
+                .unwrap_or_default(),
+            tasks: s["tasks"]
+                .as_array()
+                .map(|a| {
+                    let mut v = Vec::new();
+                    for item in a {
+                        if let Some(text) = item.as_str() {
+                            v.push(text.to_string());
+                        }
+                    }
+                    v
+                })
+                .unwrap_or_default(),
+            story_json: (*s).clone(),
+        });
+    }
+
+    // Load agent definitions from embedded agents
+    let builder_content = load_agent_content("builder");
+    let judge_content = load_agent_content("code-judge");
+    let scrum_master_content = load_agent_content("scrum-master");
+
+    let cwd = std::env::current_dir()?.display().to_string();
+
+    let ctx = SprintPipelineContext {
+        epic_code: epic.code.clone(),
+        sprint_number: sprint_num,
+        session_id: session_id.to_string(),
+        stories: story_contexts,
+        product_brief: None, // Could load from product config
+        epic_intent: epic.intent.clone(),
+        builder_agent_content: builder_content,
+        judge_agent_content: judge_content,
+        scrum_master_agent_content: scrum_master_content,
+        working_dir: cwd,
+        model_override: args.model.clone(),
+        effort_override: args.effort.clone(),
+        budget_override: args.budget_override,
+        add_dirs: args.add_dir.clone(),
+    };
+
+    let pipeline = generate_sprint_pipeline(&ctx);
+    eprintln!(
+        "[pipeline] Generated pipeline '{}' with {} stages",
+        pipeline.name,
+        pipeline.stages.len()
+    );
+
+    // Submit to platform
+    let result = submit_pipeline(
+        client,
+        &pipeline,
+        None, // repo_url -- agent runs locally
+        None,
+        None,
+        Some(vec!["claude".to_string(), "rust".to_string()]),
+    )
+    .await?;
+
+    eprintln!(
+        "[pipeline] Submitted -- run_id: {}, job_id: {}",
+        result.run_id, result.job_id
+    );
+
+    // Monitor until completion
+    let final_status = wait_for_completion(client, result.run_id, 10).await?;
+
+    eprintln!(
+        "[pipeline] Sprint {} completed -- status: {}",
+        sprint_num, final_status.status
+    );
+
+    if final_status.status == "failed" {
+        if let Some(ref err) = final_status.error_message {
+            eprintln!("[pipeline] Error: {}", err);
+        }
+    }
+
+    // Update sprint status
+    let sprint_status = match final_status.status.as_str() {
+        "succeeded" => "completed",
+        "failed" => "failed",
+        _ => "cancelled",
+    };
+    let _ = client
+        .patch::<_, serde_json::Value>(
+            &format!("/v1/er_sprints/{}", sprint_id),
+            &json!({ "status": sprint_status }),
+        )
+        .await;
+
+    Ok(())
+}
+
+/// Load embedded agent content by name.
+///
+/// Uses the agents module's resolve_agent_path to write to temp dir, then reads it back.
+/// This extracts the raw content for injection into pipeline prompts.
+fn load_agent_content(name: &str) -> String {
+    let fake_repo = std::path::PathBuf::from("/tmp/epic-runner-pipeline-agents");
+    match crate::agents::resolve_agent_path(name, &fake_repo) {
+        Some(path) => {
+            std::fs::read_to_string(&path).unwrap_or_else(|_| format!("You are a {} agent.", name))
+        }
+        None => format!("You are a {} agent.", name),
+    }
+}
