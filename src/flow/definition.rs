@@ -33,7 +33,9 @@ pub enum CeremonyNodeType {
     Loop,
     Merge,
     Output,
-    /// Merge worktree to main, push, trigger Connect App Pipeline, wait for deploy.
+    /// Commit worktree changes, merge to main, push to origin. Always runs.
+    CommitAndMerge,
+    /// Trigger Connect App Pipeline, wait for deploy. Only for deploy_profile != none.
     Deploy,
     /// Promote a deployment slot to primary (100% traffic).
     Promote,
@@ -53,6 +55,9 @@ pub struct CeremonyNodeConfig {
     pub brief: bool,
     pub allowed_tools: Option<Vec<String>>,
     pub heartbeat_timeout_secs: Option<u64>,
+    /// Maximum wall-clock time for the entire executor run (seconds).
+    /// Kills the process after this duration regardless of activity. Default: 900 (15m).
+    pub max_duration_secs: Option<u64>,
     pub gate_field: Option<String>,
     pub gate_expect: Option<String>,
     pub loop_max: Option<i32>,
@@ -161,8 +166,8 @@ mod tests {
     #[test]
     fn default_flow_parses() {
         let flow = CeremonyFlow::default_flow();
-        assert_eq!(flow.nodes.len(), 12); // v4: source → execute → judge → deploy chain → retro → output (no research/groom)
-        assert_eq!(flow.edges.len(), 14); // v4: direct execution + deploy chain gates
+        assert_eq!(flow.nodes.len(), 13); // v4: source → execute → judge → commit_and_merge → deploy chain → retro → output
+        assert_eq!(flow.edges.len(), 15); // v4: direct execution + merge + deploy chain gates
         assert!(flow.node("source").is_some());
         assert!(flow.node("execute").is_some());
         assert!(flow.node("judge_code").is_some());

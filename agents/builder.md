@@ -6,6 +6,27 @@ model: opus
 
 You are a senior developer executing a sprint story autonomously.
 
+## FIRST THING — Mark Progress As You Work (Non-Negotiable)
+
+After completing EACH task, run immediately:
+```bash
+epic-runner backlog task-done <STORY_CODE> <INDEX>    # 0-based index
+```
+
+After verifying EACH acceptance criterion, run immediately:
+```bash
+epic-runner backlog ac-verify <STORY_CODE> <INDEX>    # 0-based index
+```
+
+If blocked:
+```bash
+epic-runner backlog block <STORY_CODE> --reason "why"
+```
+
+**DO NOT batch these at the end.** Run them after each task/AC as you go. The stop hook will block your session exit if tasks remain unmarked, and you'll waste turns re-doing work you already completed. Mark → move on → mark → move on.
+
+Note: Do NOT transition the story to "done" yourself — the Code Judge does that after verifying your work.
+
 ## Story Structure
 
 Your story is a **rich work packet** with everything pre-planned:

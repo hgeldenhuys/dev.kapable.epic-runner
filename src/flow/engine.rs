@@ -430,6 +430,54 @@ pub async fn execute_flow(
                 &results,
             );
 
+            // Per-node git commit — captures ALL file changes (including Bash-modified files
+            // that the track-files.sh PostToolUse hook cannot see).
+            // Only commit for successfully completed nodes; skip if nothing changed.
+            if results.get(key).map(|r| &r.status) == Some(&CeremonyStatus::Completed) {
+                let node_label = flow
+                    .node(key)
+                    .map(|n| n.label.as_str())
+                    .unwrap_or("unknown");
+                let commit_msg = format!(
+                    "ceremony({}): {}\n\nSprint: {}\nEpic: {}",
+                    key, node_label, ctx.sprint.session_id, ctx.epic.code,
+                );
+                let add_result = std::process::Command::new("git")
+                    .args(["add", "-A"])
+                    .current_dir(&ctx.repo_path)
+                    .output();
+                if let Ok(add_out) = add_result {
+                    if add_out.status.success() {
+                        // Only commit if there are staged changes
+                        let diff_result = std::process::Command::new("git")
+                            .args(["diff", "--cached", "--quiet"])
+                            .current_dir(&ctx.repo_path)
+                            .output();
+                        let has_changes = diff_result
+                            .map(|o| !o.status.success())
+                            .unwrap_or(false);
+                        if has_changes {
+                            let commit_result = std::process::Command::new("git")
+                                .args(["commit", "-m", &commit_msg])
+                                .current_dir(&ctx.repo_path)
+                                .output();
+                            match commit_result {
+                                Ok(o) if o.status.success() => {
+                                    tracing::info!(node = %key, "Per-node commit created");
+                                }
+                                Ok(o) => {
+                                    let stderr = String::from_utf8_lossy(&o.stderr);
+                                    tracing::warn!(node = %key, %stderr, "Per-node commit failed");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(node = %key, error = %e, "Per-node git commit error");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Decrement in-degrees of downstream nodes
             if let Some(downstream) = adj.get(key) {
                 for (target, _) in downstream {
@@ -1178,20 +1226,253 @@ async fn execute_node(
             duration_seconds: None,
         }),
 
+        CeremonyNodeType::CommitAndMerge => {
+            execute_commit_and_merge_node(node, ctx, sink).await
+        }
+
         CeremonyNodeType::Deploy => execute_deploy_node(node, ctx, sink).await,
 
         CeremonyNodeType::Promote => execute_promote_node(node, ctx, sink).await,
     }
 }
 
-/// Execute a Deploy node: merge worktree → main, push, trigger pipeline, wait.
+/// Execute a CommitAndMerge node: commit worktree changes, merge to main, push.
+/// Always runs regardless of deploy_profile.
+async fn execute_commit_and_merge_node(
+    node: &CeremonyNode,
+    ctx: &FlowContext,
+    sink: &EventSink,
+) -> Result<NodeResult, Box<dyn std::error::Error>> {
+    let worktree_path = format!(".claude/worktrees/{}", ctx.epic.code);
+    let worktree_branch = format!("worktree-{}", ctx.epic.code);
+    let repo_path = &ctx.repo_path;
+
+    // Step 1: Commit any uncommitted changes in the worktree
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: "Committing worktree changes".to_string(),
+        detail: None,
+        cost_usd: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    if std::path::Path::new(&format!("{}/{}", repo_path, worktree_path)).exists() {
+        let wt_abs = std::path::Path::new(repo_path).join(&worktree_path);
+
+        // Stage modifications to already-tracked files
+        let add_tracked = std::process::Command::new("git")
+            .args(["add", "-u"])
+            .current_dir(&wt_abs)
+            .output();
+        if let Ok(output) = add_tracked {
+            if !output.status.success() {
+                tracing::warn!("git add -u failed in worktree");
+            }
+        }
+
+        // Selectively stage new (untracked) files, skipping dangerous patterns
+        let untracked = std::process::Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard"])
+            .current_dir(&wt_abs)
+            .output();
+        if let Ok(output) = untracked {
+            let file_list = String::from_utf8_lossy(&output.stdout);
+            let deny_patterns: Vec<&str> = vec![
+                ".env", ".pem", ".key", ".p12", ".pfx", "credentials", "secret",
+                "node_modules/", "target/", ".epic-runner/", "build/", "dist/",
+            ];
+
+            for file in file_list.lines() {
+                let file_lower = file.to_lowercase();
+                let is_dangerous = deny_patterns.iter().any(|p| file_lower.contains(p));
+                if !is_dangerous {
+                    std::process::Command::new("git")
+                        .args(["add", file])
+                        .current_dir(&wt_abs)
+                        .output()
+                        .ok();
+                }
+            }
+        }
+
+        // Check if there's anything to commit
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&wt_abs)
+            .output();
+        let has_changes = status
+            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false);
+
+        if has_changes {
+            let commit_msg = format!(
+                "feat({}): sprint {} ceremony changes\n\nEpic: {} — {}\nSprint: {}\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>",
+                ctx.epic.code.to_lowercase(),
+                ctx.sprint.number,
+                ctx.epic.code,
+                ctx.epic.title,
+                ctx.sprint.number,
+            );
+            std::process::Command::new("git")
+                .args(["commit", "-m", &commit_msg])
+                .current_dir(&wt_abs)
+                .output()
+                .ok();
+        }
+    }
+
+    // Step 2: Merge worktree branch into main
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Merging {} into main", worktree_branch),
+        detail: None,
+        cost_usd: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    // Stash any uncommitted changes in the main repo
+    let stash_result = std::process::Command::new("git")
+        .args(["stash", "--include-untracked"])
+        .current_dir(repo_path)
+        .output();
+    let did_stash = matches!(&stash_result, Ok(output) if output.status.success());
+    let repo_for_stash = repo_path.clone();
+    let _stash_guard = if did_stash {
+        Some(scopeguard::guard((), move |_| {
+            std::process::Command::new("git")
+                .args(["stash", "pop", "--quiet"])
+                .current_dir(&repo_for_stash)
+                .output()
+                .ok();
+        }))
+    } else {
+        None
+    };
+
+    let default_branch = ctx.default_branch.as_str();
+    let checkout = std::process::Command::new("git")
+        .args(["checkout", default_branch])
+        .current_dir(repo_path)
+        .output()?;
+    if !checkout.status.success() {
+        let err = String::from_utf8_lossy(&checkout.stderr);
+        return Ok(deploy_failed(
+            node,
+            &format!("Failed to checkout {}: {}", default_branch, err),
+        ));
+    }
+
+    let pull = std::process::Command::new("git")
+        .args(["pull", "origin", default_branch, "--rebase"])
+        .current_dir(repo_path)
+        .output()?;
+    if !pull.status.success() {
+        std::process::Command::new("git")
+            .args(["rebase", "--abort"])
+            .current_dir(repo_path)
+            .output()
+            .ok();
+        let err = String::from_utf8_lossy(&pull.stderr);
+        return Ok(deploy_failed(
+            node,
+            &format!("Failed to pull latest {}: {}", default_branch, err),
+        ));
+    }
+
+    let merge = std::process::Command::new("git")
+        .args(["merge", &worktree_branch, "--no-edit"])
+        .current_dir(repo_path)
+        .output()?;
+    if !merge.status.success() {
+        let err = String::from_utf8_lossy(&merge.stderr);
+        std::process::Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(repo_path)
+            .output()
+            .ok();
+        return Ok(deploy_failed(node, &format!("Merge conflict: {}", err)));
+    }
+
+    // Step 3: Push to origin
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: "Pushing to origin/main".to_string(),
+        detail: None,
+        cost_usd: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    let push = std::process::Command::new("git")
+        .args(["push", "origin", default_branch])
+        .current_dir(repo_path)
+        .output()?;
+    if !push.status.success() {
+        let err = String::from_utf8_lossy(&push.stderr);
+        return Ok(deploy_failed(node, &format!("Push failed: {}", err)));
+    }
+
+    // Step 4: Sync worktree branch to main HEAD
+    let wt_abs = std::path::Path::new(repo_path).join(&worktree_path);
+    let sync = std::process::Command::new("git")
+        .args(["rebase", default_branch])
+        .current_dir(&wt_abs)
+        .output()?;
+    if !sync.status.success() {
+        std::process::Command::new("git")
+            .args(["rebase", "--abort"])
+            .current_dir(&wt_abs)
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["reset", "--hard", default_branch])
+            .current_dir(&wt_abs)
+            .output()
+            .ok();
+    }
+
+    sink.emit(SprintEvent {
+        sprint_id: ctx.sprint.session_id,
+        event_type: SprintEventType::DeployStep,
+        node_id: Some(node.key.clone()),
+        node_label: Some(node.label.clone()),
+        summary: format!("Merged {} → {} and pushed to origin", worktree_branch, default_branch),
+        detail: None,
+        cost_usd: None,
+        timestamp: chrono::Utc::now(),
+    });
+
+    Ok(NodeResult {
+        key: node.key.clone(),
+        status: CeremonyStatus::Completed,
+        output: Some(format!("Merged {} to {} and pushed", worktree_branch, default_branch)),
+        cost_usd: None,
+        impediment_raised: false,
+        judge_verdict: None,
+        supervisor_decisions: vec![],
+        rubber_duck_sessions: vec![],
+        builder_output: None,
+        all_assistant_texts: vec![],
+        duration_seconds: None,
+    })
+}
+
+/// Execute a Deploy node: trigger Connect App Pipeline, wait for completion.
+/// Git merge+push is handled by the CommitAndMerge node upstream.
 async fn execute_deploy_node(
     node: &CeremonyNode,
     ctx: &FlowContext,
     sink: &EventSink,
 ) -> Result<NodeResult, Box<dyn std::error::Error>> {
     // Early exit: deploy_profile "none" means this product doesn't deploy (e.g. CLI tool).
-    // Skip immediately without doing any git operations.
     if ctx.deploy_profile == "none" {
         let msg =
             "deploy_profile is 'none' — skipping deploy (product does not deploy)".to_string();
@@ -1222,343 +1503,8 @@ async fn execute_deploy_node(
     }
 
     let c = &node.config;
-    let worktree_path = format!(".claude/worktrees/{}", ctx.epic.code);
-    let worktree_branch = format!("worktree-{}", ctx.epic.code);
-    let repo_path = &ctx.repo_path;
 
-    // Step 1: Commit any uncommitted changes in the worktree
-    sink.emit(SprintEvent {
-        sprint_id: ctx.sprint.session_id,
-        event_type: SprintEventType::DeployStep,
-        node_id: Some(node.key.clone()),
-        node_label: Some(node.label.clone()),
-        summary: "Committing worktree changes".to_string(),
-        detail: None,
-        cost_usd: None,
-        timestamp: chrono::Utc::now(),
-    });
-
-    if std::path::Path::new(&worktree_path).exists() {
-        // Phase 1: Stage modifications to already-tracked files (always safe)
-        let add_tracked = std::process::Command::new("git")
-            .args(["add", "-u"])
-            .current_dir(&worktree_path)
-            .output();
-        if let Ok(output) = add_tracked {
-            if !output.status.success() {
-                tracing::warn!("git add -u failed in worktree");
-            }
-        }
-
-        // Phase 2: Selectively stage new (untracked) files, skipping dangerous patterns.
-        // Patterns are hardcoded defaults merged with user-defined .epic-runner/.gitignore-deploy.
-        let untracked = std::process::Command::new("git")
-            .args(["ls-files", "--others", "--exclude-standard"])
-            .current_dir(&worktree_path)
-            .output();
-        if let Ok(output) = untracked {
-            let file_list = String::from_utf8_lossy(&output.stdout);
-
-            // Built-in dangerous patterns (always active, can't be overridden)
-            let mut deny_patterns: Vec<String> = vec![
-                ".env",
-                ".pem",
-                ".key",
-                ".p12",
-                ".pfx",
-                "credentials",
-                "secret",
-                "node_modules/",
-                "target/",
-                ".epic-runner/",
-                "build/",
-                "dist/",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect();
-
-            // Merge user-defined patterns from .epic-runner/.gitignore-deploy (if it exists)
-            let gitignore_deploy_path =
-                std::path::Path::new(&worktree_path).join(".epic-runner/.gitignore-deploy");
-            if gitignore_deploy_path.exists() {
-                if let Ok(contents) = std::fs::read_to_string(&gitignore_deploy_path) {
-                    for line in contents.lines() {
-                        let trimmed = line.trim();
-                        // Skip comments and blank lines (gitignore convention)
-                        if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                            deny_patterns.push(trimmed.to_string());
-                        }
-                    }
-                    tracing::info!(
-                        path = %gitignore_deploy_path.display(),
-                        "Loaded additional deploy deny patterns from .gitignore-deploy"
-                    );
-                }
-            }
-
-            let mut staged_count = 0;
-            let mut skipped: Vec<String> = Vec::new();
-
-            for file in file_list.lines() {
-                let file_lower = file.to_lowercase();
-                let is_dangerous = deny_patterns.iter().any(|p| file_lower.contains(p));
-                if is_dangerous {
-                    skipped.push(file.to_string());
-                } else {
-                    let add_file = std::process::Command::new("git")
-                        .args(["add", file])
-                        .current_dir(&worktree_path)
-                        .output();
-                    if let Ok(o) = add_file {
-                        if o.status.success() {
-                            staged_count += 1;
-                        }
-                    }
-                }
-            }
-
-            if !skipped.is_empty() {
-                tracing::warn!(
-                    skipped_files = ?skipped,
-                    "Skipped {} potentially sensitive untracked file(s) during deploy staging",
-                    skipped.len()
-                );
-            }
-            if staged_count > 0 {
-                tracing::info!(staged_count, "Staged new untracked files for deploy");
-            }
-        }
-
-        // Phase 3: Post-staging audit — warn if any sensitive-looking files got staged
-        // (catches files that passed pattern checks but have suspicious names)
-        let staged_diff = std::process::Command::new("git")
-            .args(["diff", "--cached", "--name-only"])
-            .current_dir(&worktree_path)
-            .output();
-        if let Ok(output) = staged_diff {
-            let staged_files = String::from_utf8_lossy(&output.stdout);
-            let sensitive_indicators = [".env", "secret", "credential", "key", "token", "password"];
-            let mut warnings: Vec<String> = Vec::new();
-            for file in staged_files.lines() {
-                let file_lower = file.to_lowercase();
-                for indicator in &sensitive_indicators {
-                    if file_lower.contains(indicator) {
-                        warnings.push(file.to_string());
-                        break;
-                    }
-                }
-            }
-            if !warnings.is_empty() {
-                tracing::warn!(
-                    staged_sensitive_files = ?warnings,
-                    "⚠ Post-staging audit: {} staged file(s) have sensitive-looking names — review before pushing",
-                    warnings.len()
-                );
-            }
-        }
-
-        // Check if there's anything to commit
-        let status = std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&worktree_path)
-            .output();
-        let has_changes = status
-            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false);
-
-        if has_changes {
-            let commit_msg = format!(
-                "feat({}): sprint {} ceremony changes\n\nEpic: {} — {}\nSprint: {}\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>",
-                ctx.epic.code.to_lowercase(),
-                ctx.sprint.number,
-                ctx.epic.code,
-                ctx.epic.title,
-                ctx.sprint.number,
-            );
-            std::process::Command::new("git")
-                .args(["commit", "-m", &commit_msg])
-                .current_dir(&worktree_path)
-                .output()
-                .ok();
-        }
-    }
-
-    // Step 2: Merge worktree branch into main
-    sink.emit(SprintEvent {
-        sprint_id: ctx.sprint.session_id,
-        event_type: SprintEventType::DeployStep,
-        node_id: Some(node.key.clone()),
-        node_label: Some(node.label.clone()),
-        summary: format!("Merging {} into main", worktree_branch),
-        detail: None,
-        cost_usd: None,
-        timestamp: chrono::Utc::now(),
-    });
-
-    // Stash any uncommitted changes in the main repo before checkout.
-    // This allows the deploy node to succeed even when the user's working directory is dirty.
-    let stash_result = std::process::Command::new("git")
-        .args(["stash", "--include-untracked"])
-        .current_dir(repo_path)
-        .output();
-    let did_stash = match &stash_result {
-        Ok(output) if output.status.success() => {
-            tracing::info!("Stashed uncommitted changes in main repo before deploy");
-            true
-        }
-        Ok(_) => {
-            // Exit code 1 = nothing to stash (clean repo), which is fine
-            false
-        }
-        Err(e) => {
-            tracing::warn!("Failed to run git stash: {} — proceeding without stash", e);
-            false
-        }
-    };
-    // Guard: automatically pop stash on any exit path (success, error, or `?` propagation)
-    let repo_for_stash = repo_path.clone();
-    let _stash_guard = if did_stash {
-        Some(scopeguard::guard((), move |_| {
-            tracing::info!("Restoring stashed changes in main repo");
-            let pop = std::process::Command::new("git")
-                .args(["stash", "pop", "--quiet"])
-                .current_dir(&repo_for_stash)
-                .output();
-            if let Err(e) = pop {
-                tracing::warn!("Failed to pop stash: {}", e);
-            }
-        }))
-    } else {
-        None
-    };
-
-    // Checkout the default branch in the repo root
-    let default_branch = ctx.default_branch.as_str();
-    let checkout = std::process::Command::new("git")
-        .args(["checkout", default_branch])
-        .current_dir(repo_path)
-        .output()?;
-    if !checkout.status.success() {
-        let err = String::from_utf8_lossy(&checkout.stderr);
-        return Ok(deploy_failed(
-            node,
-            &format!("Failed to checkout {}: {}", default_branch, err),
-        ));
-    }
-
-    // Pull latest default branch first
-    let pull = std::process::Command::new("git")
-        .args(["pull", "origin", default_branch, "--rebase"])
-        .current_dir(repo_path)
-        .output()?;
-    if !pull.status.success() {
-        // Abort the failed rebase to leave repo in a clean state
-        std::process::Command::new("git")
-            .args(["rebase", "--abort"])
-            .current_dir(repo_path)
-            .output()
-            .ok(); // best-effort cleanup
-        let err = String::from_utf8_lossy(&pull.stderr);
-        return Ok(deploy_failed(
-            node,
-            &format!("Failed to pull latest {}: {}", default_branch, err),
-        ));
-    }
-
-    // Merge the worktree branch
-    let merge = std::process::Command::new("git")
-        .args(["merge", &worktree_branch, "--no-edit"])
-        .current_dir(repo_path)
-        .output()?;
-    if !merge.status.success() {
-        let err = String::from_utf8_lossy(&merge.stderr);
-        // Abort the merge so we don't leave things in a dirty state
-        std::process::Command::new("git")
-            .args(["merge", "--abort"])
-            .current_dir(repo_path)
-            .output()
-            .ok();
-        return Ok(deploy_failed(node, &format!("Merge conflict: {}", err)));
-    }
-
-    // Step 3: Push to origin
-    sink.emit(SprintEvent {
-        sprint_id: ctx.sprint.session_id,
-        event_type: SprintEventType::DeployStep,
-        node_id: Some(node.key.clone()),
-        node_label: Some(node.label.clone()),
-        summary: "Pushing to origin/main".to_string(),
-        detail: None,
-        cost_usd: None,
-        timestamp: chrono::Utc::now(),
-    });
-
-    let push = std::process::Command::new("git")
-        .args(["push", "origin", default_branch])
-        .current_dir(repo_path)
-        .output()?;
-    if !push.status.success() {
-        let err = String::from_utf8_lossy(&push.stderr);
-        return Ok(deploy_failed(node, &format!("Push failed: {}", err)));
-    }
-
-    // Step 3b: Sync worktree branch to main — prevents stale-worktree rework in next sprint.
-    // After merging worktree→main, the worktree branch is behind main (main has the merge commit).
-    // Reset the worktree branch to main's HEAD so the next sprint starts with current code.
-    sink.emit(SprintEvent {
-        sprint_id: ctx.sprint.session_id,
-        event_type: SprintEventType::DeployStep,
-        node_id: Some(node.key.clone()),
-        node_label: Some(node.label.clone()),
-        summary: format!("Syncing {} to main HEAD", worktree_branch),
-        detail: None,
-        cost_usd: None,
-        timestamp: chrono::Utc::now(),
-    });
-    // Use `git rebase <default_branch>` from within the worktree directory — `git branch -f`
-    // fails when the branch is checked out in a worktree.
-    let wt_abs = std::path::Path::new(repo_path).join(&worktree_path);
-    let sync = std::process::Command::new("git")
-        .args(["rebase", default_branch])
-        .current_dir(&wt_abs)
-        .output()?;
-    if !sync.status.success() {
-        // Abort failed rebase, then try reset as fallback
-        std::process::Command::new("git")
-            .args(["rebase", "--abort"])
-            .current_dir(&wt_abs)
-            .output()
-            .ok();
-        // Fallback: hard reset to default branch (loses any uncommitted worktree changes, which
-        // is fine since we just committed everything in Step 1)
-        let reset = std::process::Command::new("git")
-            .args(["reset", "--hard", default_branch])
-            .current_dir(&wt_abs)
-            .output()?;
-        if !reset.status.success() {
-            let err = String::from_utf8_lossy(&reset.stderr);
-            tracing::warn!(
-                "Failed to sync worktree to {} (non-fatal): {}",
-                default_branch,
-                err
-            );
-        } else {
-            tracing::info!(
-                "Synced {} to {} HEAD via reset — next sprint starts fresh",
-                worktree_branch,
-                default_branch
-            );
-        }
-    } else {
-        tracing::info!(
-            "Synced {} to {} HEAD via rebase — next sprint starts fresh",
-            worktree_branch,
-            default_branch
-        );
-    }
-
-    // Step 4: Trigger Connect App Pipeline
+    // Trigger Connect App Pipeline
     // If no deploy_app_id is configured, skip gracefully — this product is a CLI tool
     // (or other non-Connect-App artifact) that doesn't need pipeline deployment.
     let cfg = match resolve_deploy_config(c, ctx.product_deploy_app_id.as_deref()) {
@@ -2157,6 +2103,7 @@ fn build_executor_config(
         max_turns: c.max_turns,
         extra_env: vec![],
         hooks_settings_json: None,
+        max_duration_secs: c.max_duration_secs.unwrap_or(900),
         template_vars: {
             let mut vars = HashMap::new();
             // Inject research notes into groom agent's {{research_notes}} placeholder

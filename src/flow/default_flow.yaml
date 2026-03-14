@@ -4,7 +4,7 @@ description: |
   v4 ceremony flow — lean execution model.
   Stories arrive pre-groomed (plan, ACs, tasks attached at creation time).
   Sprint = pure execution. No in-sprint research or grooming.
-  source → execute (per-story) → judge → [deploy chain] → retro → output.
+  source → execute (per-story) → judge → commit+merge+push → [deploy chain] → retro → output.
   Each story gets its own Claude session (UUID = session_id).
   Stop hook enforces task completion before session can end.
   Judge evaluates ACs, adds tasks/stories for rework, sets sprint goal.
@@ -148,6 +148,12 @@ nodes:
         7. provisional (bool): Set true ONLY when code is correct but browser/deploy ACs cannot be verified due to missing deploy
         8. next_sprint_goal (string): Refined goal for the NEXT sprint based on what was accomplished and what remains
 
+  - key: commit_and_merge
+    node_type: commit_and_merge
+    label: "Merge to Main"
+    always_run: true
+    config: {}
+
   - key: gate_deploy
     node_type: gate
     label: "Deploy Ready?"
@@ -264,8 +270,12 @@ edges:
   - source: execute
     target: judge_code
 
-  # Deploy chain — conditional on judge saying code is ready
+  # Merge ALWAYS runs after judge — code must reach main regardless of deploy profile
   - source: judge_code
+    target: commit_and_merge
+
+  # Deploy chain — conditional on judge saying code is ready
+  - source: commit_and_merge
     target: gate_deploy
   - source: gate_deploy
     target: deploy_standby
