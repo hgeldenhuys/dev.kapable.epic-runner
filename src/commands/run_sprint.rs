@@ -560,10 +560,10 @@ pub async fn run(
 
     // 11b. Extract learnings from SM retro and persist to sprint_learnings table
     // (feedback loop: retro action_items → sprint_learnings → next sprint's {{previous_learnings}})
-    // Also auto-create backlog items from discovered_work via agentboard CLI.
+    // Also auto-create backlog stories from discovered_work via Data API.
     if let Some(retro_result) = results.iter().find(|r| r.key == "sm_retro") {
         save_sprint_learnings(client, &epic.code, sprint.number, retro_result).await;
-        create_backlog_from_retro(&epic.code, sprint.number, retro_result);
+        create_backlog_from_retro(client, &epic, sprint.number, retro_result).await;
 
         // v3: Update product brief (PRODUCTS.md) from retro insights + accumulated learnings
         let learnings = load_previous_learnings(client, &epic.code).await;
@@ -1350,11 +1350,12 @@ async fn save_sprint_learnings(
     }
 }
 
-/// Auto-create agentboard backlog items from SM retro's discovered_work array.
-/// Uses the agentboard CLI (shells out) so we inherit its config resolution.
+/// Auto-create backlog stories from SM retro's discovered_work array.
+/// Uses the Data API directly (same pattern as delta stories from judge).
 /// Best-effort — failures are logged but don't abort.
-fn create_backlog_from_retro(
-    epic_code: &str,
+async fn create_backlog_from_retro(
+    client: &ApiClient,
+    epic: &crate::types::Epic,
     sprint_number: i32,
     retro_result: &crate::flow::engine::NodeResult,
 ) {
@@ -1385,45 +1386,44 @@ fn create_backlog_from_retro(
     if discovered.is_empty() {
         return;
     }
-    let items = &discovered;
 
     let mut created = 0;
-    for item in items {
+    for item in &discovered {
         let title = match item.as_str() {
             Some(t) if !t.is_empty() => t,
             _ => continue,
         };
 
-        let description = format!(
-            "Discovered during sprint {} of epic {}. Auto-created by SM retro.",
-            sprint_number, epic_code
-        );
-
-        let result = std::process::Command::new("agentboard")
-            .args([
-                "backlog",
-                "add",
-                "--title",
-                title,
-                "--type",
-                "story",
-                "--description",
-                &description,
-            ])
-            .output();
-
-        match result {
-            Ok(output) if output.status.success() => {
-                created += 1;
-                tracing::debug!(title, "Created backlog item from retro");
+        let story_code = match next_story_code(client, &epic.product_id.to_string()).await {
+            Ok(code) => code,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to generate story code for retro discovered work");
+                continue;
             }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(title, stderr = %stderr, "Failed to create backlog item");
+        };
+
+        let body = serde_json::json!({
+            "product_id": epic.product_id.to_string(),
+            "title": title,
+            "description": format!(
+                "Discovered during sprint {} of epic {}. Auto-created by SM retro.",
+                sprint_number, epic.code
+            ),
+            "status": "draft",
+            "code": story_code,
+            "epic_code": epic.code,
+        });
+
+        match client
+            .post::<_, serde_json::Value>("/v1/stories", &body)
+            .await
+        {
+            Ok(_) => {
+                created += 1;
+                tracing::debug!(title, code = %story_code, "Created story from retro discovered_work");
             }
             Err(e) => {
-                tracing::warn!(error = %e, "agentboard CLI not available — skipping backlog creation");
-                return; // No point trying more if CLI is missing
+                tracing::warn!(title, error = %e, "Failed to create story from retro");
             }
         }
     }
@@ -1431,9 +1431,9 @@ fn create_backlog_from_retro(
     if created > 0 {
         tracing::info!(
             created,
-            epic_code,
+            epic_code = %epic.code,
             sprint_number,
-            "Created backlog items from retro discovered_work"
+            "Created stories from retro discovered_work"
         );
     }
 }
