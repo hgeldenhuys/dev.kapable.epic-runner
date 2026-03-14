@@ -44,6 +44,11 @@ pub struct ExecutorConfig {
     /// When non-empty, the executor uses `resolve_agent_path_with_vars` to replace
     /// placeholders in the agent `.md` file before writing to disk.
     pub template_vars: HashMap<String, String>,
+    /// JSON string for --settings flag. When set, injects Claude Code hooks
+    /// (stop-gate.sh, track-files.sh) so the builder session enforces task completion.
+    /// This ensures hooks travel WITH the executor regardless of which repo/worktree
+    /// the Claude session lands in.
+    pub hooks_settings_json: Option<String>,
 }
 
 pub struct ExecutorResult {
@@ -81,6 +86,12 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     // Disable Claude's built-in git commit/PR instructions — ceremony nodes
     // have their own git handling via system prompts and deploy nodes.
     cmd.env("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1");
+
+    // Disable cmux hook injection — the cmux wrapper around `claude` adds its own
+    // --settings with notification hooks. When we inject our own --settings (with
+    // stop-gate.sh), cmux's --settings would conflict. This env var tells the cmux
+    // wrapper to pass through to the real claude binary without injecting hooks.
+    cmd.env("CMUX_CLAUDE_HOOKS_DISABLED", "1");
 
     // Set additional env vars (e.g., EPIC_RUNNER_STORY_FILE for stop hook)
     for (key, val) in &config.extra_env {
@@ -128,6 +139,11 @@ pub fn build_command(config: &ExecutorConfig) -> Command {
     }
     if let Some(sp) = &config.system_prompt {
         cmd.arg("--append-system-prompt").arg(sp);
+    }
+    // Inject --settings with hooks (stop-gate, track-files) so they travel
+    // with the executor regardless of which repo/worktree Claude runs in.
+    if let Some(settings_json) = &config.hooks_settings_json {
+        cmd.arg("--settings").arg(settings_json);
     }
     cmd.arg(&config.prompt);
     cmd.current_dir(&config.repo_path);

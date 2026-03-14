@@ -23,6 +23,7 @@ fn build_command_includes_all_flags() {
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
     let cmd = build_command(&config);
@@ -51,6 +52,17 @@ fn build_command_includes_all_flags() {
         has_git_env,
         "Expected CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1 env var"
     );
+
+    // Verify CMUX_CLAUDE_HOOKS_DISABLED env var is set (prevents cmux wrapper
+    // from injecting its own --settings that would override our hooks)
+    let has_cmux_env = cmd.as_std().get_envs().any(|(k, v)| {
+        k.to_string_lossy() == "CMUX_CLAUDE_HOOKS_DISABLED"
+            && v.map(|v| v.to_string_lossy().into_owned()) == Some("1".to_string())
+    });
+    assert!(
+        has_cmux_env,
+        "Expected CMUX_CLAUDE_HOOKS_DISABLED=1 env var"
+    );
 }
 
 #[test]
@@ -75,6 +87,7 @@ fn build_command_resume_uses_resume_flag() {
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
     let cmd = build_command(&config);
@@ -110,6 +123,7 @@ fn build_command_with_agent() {
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
     let cmd = build_command(&config);
@@ -154,6 +168,7 @@ fn build_command_brief_flag() {
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
     let cmd = build_command(&config);
@@ -187,6 +202,7 @@ fn build_command_max_turns_from_config() {
         node_label: None,
         max_turns: Some(15),
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
     let cmd = build_command(&config);
@@ -222,6 +238,7 @@ fn build_command_max_turns_default() {
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
     let cmd = build_command(&config);
@@ -233,4 +250,76 @@ fn build_command_max_turns_default() {
     // Should fall back to default 50
     let turns_idx = args.iter().position(|a| a == "--max-turns").unwrap();
     assert_eq!(args[turns_idx + 1], "50");
+}
+
+#[test]
+fn build_command_hooks_settings_injected() {
+    let settings = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/stop-gate.sh","timeout":10}]}]}}"#;
+    let config = ExecutorConfig {
+        model: "opus".into(),
+        effort: "high".into(),
+        worktree_name: "HOOK-001".into(),
+        session_id: Uuid::new_v4(),
+        repo_path: "/tmp/test-repo".into(),
+        add_dirs: vec![],
+        system_prompt: None,
+        prompt: "Build something".into(),
+        chrome: false,
+        brief: false,
+        max_budget_usd: None,
+        allowed_tools: None,
+        resume_session: false,
+        agent: None,
+        heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
+        max_turns: None,
+        extra_env: vec![],
+        hooks_settings_json: Some(settings.to_string()),
+        template_vars: std::collections::HashMap::new(),
+    };
+    let cmd = build_command(&config);
+    let args: Vec<_> = cmd
+        .as_std()
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert!(args.contains(&"--settings".to_string()));
+    let settings_idx = args.iter().position(|a| a == "--settings").unwrap();
+    let settings_val = &args[settings_idx + 1];
+    assert!(settings_val.contains("stop-gate.sh"));
+}
+
+#[test]
+fn build_command_no_settings_when_none() {
+    let config = ExecutorConfig {
+        model: "opus".into(),
+        effort: "high".into(),
+        worktree_name: "HOOK-002".into(),
+        session_id: Uuid::new_v4(),
+        repo_path: "/tmp/test-repo".into(),
+        add_dirs: vec![],
+        system_prompt: None,
+        prompt: "Build something".into(),
+        chrome: false,
+        brief: false,
+        max_budget_usd: None,
+        allowed_tools: None,
+        resume_session: false,
+        agent: None,
+        heartbeat_timeout_secs: 300,
+        node_id: None,
+        node_label: None,
+        max_turns: None,
+        extra_env: vec![],
+        hooks_settings_json: None,
+        template_vars: std::collections::HashMap::new(),
+    };
+    let cmd = build_command(&config);
+    let args: Vec<_> = cmd
+        .as_std()
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert!(!args.contains(&"--settings".to_string()));
 }

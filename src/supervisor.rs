@@ -1,3 +1,4 @@
+use crate::builder;
 use crate::executor::{self, ExecutorConfig, ExecutorResult};
 use crate::types::*;
 
@@ -61,24 +62,66 @@ pub async fn supervise(
             }
         }
 
-        // Natural completion
+        // Natural completion — but first check if builder left tasks/ACs unmarked.
+        // --print mode doesn't fire Stop hooks, so task enforcement must happen here.
         if !result.stop_hook_fired && result.exit_code == 0 {
+            // Check if builder output has incomplete tasks/ACs on "done" stories
+            let incomplete = check_builder_task_completion(result.result_text.as_deref());
+
+            if incomplete.is_empty() || stop_hook_count >= sup_config.max_stop_hooks {
+                // Either tasks are properly marked, or we've exhausted retries
+                let reasoning = if incomplete.is_empty() {
+                    "Natural completion — exit code 0, tasks verified".to_string()
+                } else {
+                    format!(
+                        "Natural completion — tasks still incomplete after {} enforcement retries, allowing exit",
+                        stop_hook_count
+                    )
+                };
+                let decision = SupervisorDecision {
+                    sprint_id: result.session_id,
+                    stop_hook_count,
+                    decision: SupervisorAction::Complete,
+                    reasoning,
+                    rubber_duck_insights: None,
+                    timestamp: chrono::Utc::now(),
+                };
+                decisions.push(decision);
+                return Ok(SupervisedResult {
+                    executor_result: result,
+                    decisions,
+                    rubber_duck_sessions,
+                    impediment_raised,
+                    total_stop_hooks: stop_hook_count,
+                });
+            }
+
+            // Tasks incomplete — resume session to enforce marking
+            stop_hook_count += 1;
+            tracing::info!(
+                stop_hook_count,
+                stories_with_gaps = incomplete.len(),
+                "Post-builder task enforcement — resuming to mark tasks/ACs"
+            );
+
+            let enforcement_prompt = build_task_enforcement_prompt(&incomplete);
+
             let decision = SupervisorDecision {
                 sprint_id: result.session_id,
                 stop_hook_count,
-                decision: SupervisorAction::Complete,
-                reasoning: "Natural completion — exit code 0, no stop hook".to_string(),
+                decision: SupervisorAction::ResumeForTaskEnforcement,
+                reasoning: format!(
+                    "Builder exited with {} stories having unmarked tasks/ACs — resuming for enforcement (attempt {}/{})",
+                    incomplete.len(), stop_hook_count, sup_config.max_stop_hooks
+                ),
                 rubber_duck_insights: None,
                 timestamp: chrono::Utc::now(),
             };
             decisions.push(decision);
-            return Ok(SupervisedResult {
-                executor_result: result,
-                decisions,
-                rubber_duck_sessions,
-                impediment_raised,
-                total_stop_hooks: stop_hook_count,
-            });
+
+            current_config.resume_session = true;
+            current_config.prompt = enforcement_prompt;
+            continue;
         }
 
         stop_hook_count += 1;
@@ -253,6 +296,7 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
 
@@ -282,6 +326,115 @@ async fn invoke_rubber_duck(result: &ExecutorResult) -> Option<RubberDuckSession
             None
         }
     }
+}
+
+/// Summary of a story with incomplete task/AC marking.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct IncompleteStory {
+    code: String,
+    status: String,
+    tasks_done: usize,
+    tasks_total: usize,
+    acs_verified: usize,
+    acs_total: usize,
+    blocked_reason: Option<String>,
+}
+
+/// Check builder output for stories that claim "done" but have unmarked tasks/ACs.
+/// Also checks for stories that are blocked (which is a valid exit condition).
+///
+/// Returns a list of stories with gaps — empty means everything is properly marked.
+fn check_builder_task_completion(result_text: Option<&str>) -> Vec<IncompleteStory> {
+    let output = match builder::parse_builder_output(result_text) {
+        Some(o) => o,
+        None => return vec![], // No parseable output — can't enforce
+    };
+
+    let mut incomplete = Vec::new();
+
+    for story in &output.stories {
+        // Blocked stories are fine — the builder declared an escape hatch
+        if story.status == "blocked" && story.blocked_reason.is_some() {
+            continue;
+        }
+
+        let tasks_done = story.tasks.iter().filter(|t| t.done).count();
+        let tasks_total = story.tasks.len();
+        let acs_verified = story
+            .acceptance_criteria
+            .iter()
+            .filter(|a| a.verified)
+            .count();
+        let acs_total = story.acceptance_criteria.len();
+
+        // Story says "done" but has unmarked tasks or ACs
+        let tasks_incomplete = tasks_total > 0 && tasks_done < tasks_total;
+        let acs_incomplete = acs_total > 0 && acs_verified < acs_total;
+
+        if story.status == "done" && (tasks_incomplete || acs_incomplete) {
+            incomplete.push(IncompleteStory {
+                code: story.code.clone().unwrap_or_else(|| story.id.clone()),
+                status: story.status.clone(),
+                tasks_done,
+                tasks_total,
+                acs_verified,
+                acs_total,
+                blocked_reason: story.blocked_reason.clone(),
+            });
+        }
+    }
+
+    incomplete
+}
+
+/// Build a pointed prompt that tells the builder to mark its tasks done or declare blocked.
+fn build_task_enforcement_prompt(incomplete: &[IncompleteStory]) -> String {
+    let mut prompt = String::from(
+        "STOP. You reported stories as done but left tasks and/or acceptance criteria unmarked. \
+         You MUST mark each task and AC before you can exit.\n\n",
+    );
+
+    for story in incomplete {
+        prompt.push_str(&format!(
+            "Story {}: status=\"{}\" but tasks={}/{} done, ACs={}/{} verified.\n",
+            story.code,
+            story.status,
+            story.tasks_done,
+            story.tasks_total,
+            story.acs_verified,
+            story.acs_total,
+        ));
+        if story.tasks_done < story.tasks_total {
+            prompt.push_str("  Mark each completed task:\n");
+            for i in 0..story.tasks_total {
+                prompt.push_str(&format!(
+                    "    epic-runner backlog task-done {} {}\n",
+                    story.code, i
+                ));
+            }
+        }
+        if story.acs_verified < story.acs_total {
+            prompt.push_str("  Verify each acceptance criterion:\n");
+            for i in 0..story.acs_total {
+                prompt.push_str(&format!(
+                    "    epic-runner backlog ac-verify {} {}\n",
+                    story.code, i
+                ));
+            }
+        }
+        prompt.push_str(&format!(
+            "  Or if genuinely blocked: epic-runner backlog block {} --reason \"<why>\"\n\n",
+            story.code
+        ));
+    }
+
+    prompt.push_str(
+        "After marking all tasks/ACs, output your final JSON with updated done/verified states. \
+         You cannot stop until every task is done=true, every AC is verified=true, or the story is blocked.",
+    );
+
+    prompt
 }
 
 #[cfg(test)]
@@ -346,5 +499,140 @@ mod tests {
         let text = "blocked by AUTH-001 and also blocked by AUTH-001 again";
         let blockers = extract_all_blockers(text);
         assert_eq!(blockers.len(), 1);
+    }
+
+    // ── Task enforcement tests ────────────────────
+
+    #[test]
+    fn task_enforcement_detects_incomplete_tasks() {
+        let json = r#"{"stories":[{
+            "id":"abc","code":"ER-072","status":"done",
+            "tasks":[
+                {"description":"Add health command","done":false},
+                {"description":"Add tests","done":false}
+            ],
+            "acceptance_criteria":[
+                {"criterion":"Health output shows table","verified":true}
+            ],
+            "changed_files":[]
+        }]}"#;
+        let incomplete = check_builder_task_completion(Some(json));
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(incomplete[0].code, "ER-072");
+        assert_eq!(incomplete[0].tasks_done, 0);
+        assert_eq!(incomplete[0].tasks_total, 2);
+        assert_eq!(incomplete[0].acs_verified, 1);
+        assert_eq!(incomplete[0].acs_total, 1);
+    }
+
+    #[test]
+    fn task_enforcement_passes_when_all_done() {
+        let json = r#"{"stories":[{
+            "id":"abc","code":"ER-072","status":"done",
+            "tasks":[
+                {"description":"Add health command","done":true},
+                {"description":"Add tests","done":true}
+            ],
+            "acceptance_criteria":[
+                {"criterion":"Health output shows table","verified":true}
+            ],
+            "changed_files":[]
+        }]}"#;
+        let incomplete = check_builder_task_completion(Some(json));
+        assert!(incomplete.is_empty());
+    }
+
+    #[test]
+    fn task_enforcement_allows_blocked_stories() {
+        let json = r#"{"stories":[{
+            "id":"abc","code":"ER-099","status":"blocked",
+            "blocked_reason":"Need SSH access to production",
+            "tasks":[
+                {"description":"Configure SSH","done":false}
+            ],
+            "acceptance_criteria":[],
+            "changed_files":[]
+        }]}"#;
+        let incomplete = check_builder_task_completion(Some(json));
+        assert!(
+            incomplete.is_empty(),
+            "Blocked stories should not trigger enforcement"
+        );
+    }
+
+    #[test]
+    fn task_enforcement_detects_incomplete_acs() {
+        let json = r#"{"stories":[{
+            "id":"abc","code":"ER-050","status":"done",
+            "tasks":[{"description":"Implement feature","done":true}],
+            "acceptance_criteria":[
+                {"criterion":"Feature works","verified":true},
+                {"criterion":"Tests pass","verified":false}
+            ],
+            "changed_files":[]
+        }]}"#;
+        let incomplete = check_builder_task_completion(Some(json));
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(incomplete[0].acs_verified, 1);
+        assert_eq!(incomplete[0].acs_total, 2);
+    }
+
+    #[test]
+    fn task_enforcement_ignores_in_progress_stories() {
+        let json = r#"{"stories":[{
+            "id":"abc","code":"ER-050","status":"in_progress",
+            "tasks":[{"description":"Implement feature","done":false}],
+            "acceptance_criteria":[],
+            "changed_files":[]
+        }]}"#;
+        let incomplete = check_builder_task_completion(Some(json));
+        assert!(
+            incomplete.is_empty(),
+            "in_progress stories don't claim done — no enforcement needed"
+        );
+    }
+
+    #[test]
+    fn task_enforcement_no_output() {
+        let incomplete = check_builder_task_completion(None);
+        assert!(incomplete.is_empty(), "No output means nothing to enforce");
+    }
+
+    #[test]
+    fn task_enforcement_prompt_includes_cli_commands() {
+        let incomplete = vec![IncompleteStory {
+            code: "ER-072".to_string(),
+            status: "done".to_string(),
+            tasks_done: 0,
+            tasks_total: 3,
+            acs_verified: 1,
+            acs_total: 2,
+            blocked_reason: None,
+        }];
+        let prompt = build_task_enforcement_prompt(&incomplete);
+        assert!(prompt.contains("epic-runner backlog task-done ER-072 0"));
+        assert!(prompt.contains("epic-runner backlog task-done ER-072 1"));
+        assert!(prompt.contains("epic-runner backlog task-done ER-072 2"));
+        assert!(prompt.contains("epic-runner backlog ac-verify ER-072"));
+        assert!(prompt.contains("epic-runner backlog block ER-072"));
+    }
+
+    #[test]
+    fn task_enforcement_prompt_skips_done_tasks() {
+        let incomplete = vec![IncompleteStory {
+            code: "ER-050".to_string(),
+            status: "done".to_string(),
+            tasks_done: 3,
+            tasks_total: 3,
+            acs_verified: 0,
+            acs_total: 2,
+            blocked_reason: None,
+        }];
+        let prompt = build_task_enforcement_prompt(&incomplete);
+        // Tasks are all done — prompt should NOT include task-done commands
+        assert!(!prompt.contains("task-done"));
+        // But ACs are incomplete — prompt SHOULD include ac-verify commands
+        assert!(prompt.contains("ac-verify ER-050 0"));
+        assert!(prompt.contains("ac-verify ER-050 1"));
     }
 }

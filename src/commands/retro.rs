@@ -63,6 +63,7 @@ pub async fn run(
         node_label: None,
         max_turns: None,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: std::collections::HashMap::new(),
     };
 

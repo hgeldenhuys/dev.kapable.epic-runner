@@ -6,6 +6,7 @@ pub mod config;
 pub mod event_sink;
 pub mod executor;
 pub mod flow;
+pub mod hooks;
 pub mod impediments;
 pub mod json_extract;
 pub mod judge;

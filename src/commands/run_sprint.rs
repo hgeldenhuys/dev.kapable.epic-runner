@@ -489,13 +489,38 @@ pub async fn run(
         "cost_usd": total_cost,
         "ceremony_costs": ceremony_costs,
     });
+    // Persist the full judge verdict so dashboards, audit, and orchestrator
+    // can see intent_satisfied, mission_progress, stories_completed, etc.
     if let Some(ref verdict) = judge_verdict {
+        if let Ok(verdict_json) = serde_json::to_value(verdict) {
+            sprint_patch
+                .as_object_mut()
+                .unwrap()
+                .insert("verdict".to_string(), verdict_json);
+        }
         if let Some(ref next_goal) = verdict.next_sprint_goal {
             sprint_patch
                 .as_object_mut()
                 .unwrap()
                 .insert("next_sprint_goal".to_string(), json!(next_goal));
         }
+    }
+    // Persist which story codes were assigned to this sprint for audit trail.
+    let stories_assigned: Vec<String> = sprint
+        .stories
+        .as_ref()
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s["code"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !stories_assigned.is_empty() {
+        sprint_patch
+            .as_object_mut()
+            .unwrap()
+            .insert("stories_assigned".to_string(), json!(stories_assigned));
     }
 
     // Build handoff_summary — condensed context for the next sprint's builder via {{epic_log}}.

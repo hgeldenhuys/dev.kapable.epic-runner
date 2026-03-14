@@ -706,6 +706,7 @@ pub enum SupervisorAction {
     Complete,
     Resume,
     ResumeWithRubberDuck,
+    ResumeForTaskEnforcement,
     Abort,
     RaiseImpediment,
     EscalateToHuman,

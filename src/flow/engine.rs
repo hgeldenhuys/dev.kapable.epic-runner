@@ -897,9 +897,19 @@ async fn execute_node(
 
                 // Cache story UUIDs locally so the stop hook can do a fast lookup
                 // to determine if a session is a story session.
-                let stories_cache_path =
-                    std::path::Path::new(&ctx.repo_path).join(".epic-runner/stories/uuids.cache");
+                // Use absolute path so hooks work regardless of CWD/worktree.
+                let repo_abs = std::fs::canonicalize(&ctx.repo_path)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&ctx.repo_path));
+                let stories_cache_path = repo_abs.join(".epic-runner/stories/uuids.cache");
                 let _ = std::fs::create_dir_all(stories_cache_path.parent().unwrap());
+
+                // Build hooks settings from embedded scripts (written to temp dir).
+                // This replaces the old approach of looking for hooks/ in repo_abs,
+                // which failed because hooks live in the epic-runner project, not the target repo.
+                let hooks_settings_json = crate::hooks::build_hooks_settings_json();
+                if hooks_settings_json.is_none() {
+                    tracing::warn!("Failed to write embedded hooks to temp dir — builder sessions will not enforce task completion");
+                }
                 {
                     let uuids: Vec<&str> = stories
                         .iter()
@@ -946,8 +956,8 @@ async fn execute_node(
 
                     // Write story JSON to disk for stop-hook enforcement.
                     // The stop hook reads this file to check task completion.
-                    let stories_dir =
-                        std::path::Path::new(&ctx.repo_path).join(".epic-runner/stories");
+                    // Uses repo_abs (absolute path) so hooks work in any CWD/worktree.
+                    let stories_dir = repo_abs.join(".epic-runner/stories");
                     let _ = std::fs::create_dir_all(&stories_dir);
                     let story_file = stories_dir.join(format!("{}.json", story_id));
                     if let Ok(json) = serde_json::to_string_pretty(story_val) {
@@ -973,7 +983,14 @@ async fn execute_node(
                             "EPIC_RUNNER_STORIES_CACHE".to_string(),
                             stories_cache_path.to_string_lossy().to_string(),
                         ),
+                        (
+                            "EPIC_RUNNER_MAX_STOP_ITERATIONS".to_string(),
+                            node.config.loop_max.unwrap_or(5).to_string(),
+                        ),
                     ];
+                    // Inject hooks settings so stop-gate.sh and track-files.sh
+                    // travel with the executor into any repo/worktree.
+                    exec_config.hooks_settings_json = hooks_settings_json.clone();
 
                     let sup_config = supervisor::SupervisorConfig {
                         max_stop_hooks: node.config.loop_max.unwrap_or(5),
@@ -2139,6 +2156,7 @@ fn build_executor_config(
         node_label: Some(node.label.clone()),
         max_turns: c.max_turns,
         extra_env: vec![],
+        hooks_settings_json: None,
         template_vars: {
             let mut vars = HashMap::new();
             // Inject research notes into groom agent's {{research_notes}} placeholder
