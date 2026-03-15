@@ -10,6 +10,30 @@ use crate::flow::patcher;
 use crate::scrum_master::{self, NodeOutcome, SprintHistory};
 use crate::types::*;
 
+/// Outcome of a pipeline sprint execution.
+#[derive(Debug)]
+enum SprintOutcome {
+    /// Judge says epic mission is satisfied — close the epic.
+    MissionComplete,
+    /// Judge says more work needed — continue to next sprint.
+    MoreWorkNeeded,
+    /// Judge found an impediment — pause the epic.
+    Blocked(String),
+    /// Pipeline infrastructure failed — epic in error, stop immediately.
+    Error(String),
+}
+
+#[derive(Debug)]
+struct JudgeVerdictSummary {
+    intent_satisfied: bool,
+    #[allow(dead_code)]
+    mission_progress: i32,
+    blocked: bool,
+    action_items: Vec<String>,
+    #[allow(dead_code)]
+    next_sprint_goal: Option<String>,
+}
+
 #[derive(Args)]
 pub struct OrchestrateArgs {
     /// Epic code to orchestrate (e.g. AUTH-001)
@@ -418,30 +442,56 @@ pub async fn run(
 
         // ── Pipeline engine branch ──
         if args.engine == "pipeline" {
-            let pipeline_result = run_pipeline_engine(
+            let outcome = run_pipeline_engine(
                 &args, client, &epic, sprint_num, session_id, sprint_id, &batch,
             )
             .await;
 
-            match pipeline_result {
-                Ok(()) => {
+            match outcome {
+                Ok(SprintOutcome::MissionComplete) => {
+                    eprintln!(
+                        "{} — closing epic {}",
+                        "Intent satisfied".green().bold(),
+                        epic.code
+                    );
+                    let _ = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/epics/{}", epic.id),
+                            &json!({ "status": "closed", "closed_at": chrono::Utc::now().to_rfc3339() }),
+                        )
+                        .await;
+                    break;
+                }
+                Ok(SprintOutcome::MoreWorkNeeded) => {
                     eprintln!(
                         "{}",
-                        format!("Pipeline sprint {sprint_num} completed successfully")
-                            .green()
-                            .bold()
+                        format!("Sprint {sprint_num} complete — more work needed").yellow()
                     );
+                    // continue to next sprint
+                }
+                Ok(SprintOutcome::Blocked(reason)) => {
+                    eprintln!("{}: {}", "Epic blocked".red().bold(), reason);
+                    let _ = client
+                        .patch::<_, serde_json::Value>(
+                            &format!("/v1/epics/{}", epic.id),
+                            &json!({ "status": "blocked" }),
+                        )
+                        .await;
+                    break;
+                }
+                Ok(SprintOutcome::Error(err)) => {
+                    eprintln!(
+                        "{}: {}",
+                        "Pipeline error — epic NOT retried".red().bold(),
+                        err
+                    );
+                    break;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "{}",
-                        format!("Pipeline sprint {sprint_num} failed: {e}")
-                            .red()
-                            .bold()
-                    );
+                    eprintln!("{}: {}", "Pipeline submission error".red().bold(), e);
+                    break;
                 }
             }
-            // Pipeline mode runs one sprint at a time; continue the outer loop
             continue;
         }
 
@@ -1498,6 +1548,12 @@ fn setup_log_redirect(
 /// Generates a PipelineDefinition from the sprint's stories, submits it to the
 /// platform API, and polls until completion. Loads product brief, deploy profile,
 /// and previous learnings for full context injection.
+///
+/// Returns `SprintOutcome` to drive the sprint loop:
+/// - Pipeline failure → `Error` (stop, don't retry)
+/// - Judge satisfied → `MissionComplete` (close epic)
+/// - Judge blocked → `Blocked` (pause epic)
+/// - Otherwise → `MoreWorkNeeded` (next sprint)
 #[allow(clippy::too_many_arguments)]
 async fn run_pipeline_engine(
     args: &OrchestrateArgs,
@@ -1507,7 +1563,7 @@ async fn run_pipeline_engine(
     session_id: Uuid,
     sprint_id: &str,
     stories: &[&serde_json::Value],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<SprintOutcome, Box<dyn std::error::Error>> {
     use crate::pipeline_generator::{
         generate_sprint_pipeline, SprintPipelineContext, StoryContext,
     };
@@ -1565,18 +1621,7 @@ async fn run_pipeline_engine(
     let cwd = std::env::current_dir()?.display().to_string();
 
     // Build hooks settings from hook file paths
-    let hooks_settings = serde_json::json!({
-        "hooks": {
-            "Stop": [{
-                "matcher": "",
-                "hooks": [{"type": "command", "command": format!("{}/hooks/stop-gate.sh", cwd)}]
-            }],
-            "PostToolUse": [{
-                "matcher": "Write|Edit",
-                "hooks": [{"type": "command", "command": format!("{}/hooks/track-files.sh", cwd)}]
-            }]
-        }
-    });
+    let hooks_settings = crate::pipeline_generator::build_hooks_settings(&cwd);
 
     // Load product for brief + deploy profile
     let product: serde_json::Value = client
@@ -1640,6 +1685,7 @@ async fn run_pipeline_engine(
         product_definition_of_done: product_dod,
         previous_learnings,
         serial: true,
+        epic_branch: format!("epic/{}", epic.code.to_lowercase()),
     };
 
     let pipeline = generate_sprint_pipeline(&ctx);
@@ -1673,26 +1719,95 @@ async fn run_pipeline_engine(
         sprint_num, final_status.status
     );
 
+    // Pipeline FAILED = infrastructure error, not "more work needed"
     if final_status.status == "failed" {
-        if let Some(ref err) = final_status.error_message {
-            eprintln!("[pipeline] Error: {}", err);
-        }
+        let error_msg = final_status
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "Pipeline execution failed".to_string());
+        // Update sprint status
+        let _ = client
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/er_sprints/{}", sprint_id),
+                &json!({ "status": "failed" }),
+            )
+            .await;
+        return Ok(SprintOutcome::Error(error_msg));
     }
 
-    // Update sprint status
-    let sprint_status = match final_status.status.as_str() {
-        "succeeded" => "completed",
-        "failed" => "failed",
-        _ => "cancelled",
+    if final_status.status == "cancelled" {
+        let _ = client
+            .patch::<_, serde_json::Value>(
+                &format!("/v1/er_sprints/{}", sprint_id),
+                &json!({ "status": "cancelled" }),
+            )
+            .await;
+        return Ok(SprintOutcome::Error("Pipeline was cancelled".to_string()));
+    }
+
+    // Pipeline SUCCEEDED — extract judge verdict from logs
+    let verdict = extract_judge_verdict(client, result.run_id).await;
+    let outcome = match &verdict {
+        Some(v) if v.intent_satisfied => SprintOutcome::MissionComplete,
+        Some(v) if v.blocked => SprintOutcome::Blocked(v.action_items.join(", ")),
+        _ => SprintOutcome::MoreWorkNeeded,
+    };
+
+    // Update sprint status with verdict summary
+    let sprint_status = match &outcome {
+        SprintOutcome::MissionComplete => "completed",
+        SprintOutcome::MoreWorkNeeded => "completed",
+        SprintOutcome::Blocked(_) => "blocked",
+        SprintOutcome::Error(_) => "failed",
     };
     let _ = client
         .patch::<_, serde_json::Value>(
             &format!("/v1/er_sprints/{}", sprint_id),
-            &json!({ "status": sprint_status }),
+            &json!({
+                "status": sprint_status,
+                "finished_at": chrono::Utc::now().to_rfc3339(),
+            }),
         )
         .await;
 
-    Ok(())
+    Ok(outcome)
+}
+
+/// Extract judge verdict from the judge-code stage's log output.
+///
+/// The judge outputs structured JSON with `intent_satisfied`, `mission_progress`, etc.
+/// This function fetches the judge stage logs and parses the JSON verdict.
+async fn extract_judge_verdict(client: &ApiClient, run_id: Uuid) -> Option<JudgeVerdictSummary> {
+    use crate::pipeline_submitter::fetch_run_logs;
+
+    let logs = fetch_run_logs(client, run_id, Some("judge-code"), Some("judge"))
+        .await
+        .ok()?;
+
+    // Parse verdict JSON from logs — it may be wrapped in markdown code blocks
+    let verdict = crate::json_extract::extract_json_object(&logs)?;
+
+    Some(JudgeVerdictSummary {
+        intent_satisfied: verdict["intent_satisfied"].as_bool().unwrap_or(false),
+        mission_progress: verdict["mission_progress"].as_f64().unwrap_or(0.0) as i32,
+        blocked: verdict
+            .get("blocked")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
+        action_items: verdict["action_items"]
+            .as_array()
+            .map(|a| {
+                let mut items = Vec::new();
+                for v in a {
+                    if let Some(s) = v.as_str() {
+                        items.push(s.to_string());
+                    }
+                }
+                items
+            })
+            .unwrap_or_default(),
+        next_sprint_goal: verdict["next_sprint_goal"].as_str().map(String::from),
+    })
 }
 
 /// Load embedded agent content by name.

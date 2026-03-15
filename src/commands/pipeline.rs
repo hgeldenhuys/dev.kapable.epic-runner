@@ -8,7 +8,9 @@ use uuid::Uuid;
 
 use super::CliConfig;
 use crate::api_client::{ApiClient, DataWrapper};
-use crate::pipeline_generator::{generate_sprint_pipeline, SprintPipelineContext, StoryContext};
+use crate::pipeline_generator::{
+    build_hooks_settings, generate_sprint_pipeline, SprintPipelineContext, StoryContext,
+};
 use crate::types::*;
 
 #[derive(Args)]
@@ -158,6 +160,7 @@ async fn generate(
         product_definition_of_done: product["definition_of_done"].as_str().map(String::from),
         previous_learnings: None,
         serial: !args.parallel,
+        epic_branch: format!("epic/{}", args.epic_code.to_lowercase()),
     };
 
     let pipeline = generate_sprint_pipeline(&ctx);
@@ -237,23 +240,6 @@ fn extract_string_array(val: &serde_json::Value) -> Vec<String> {
             v
         })
         .unwrap_or_default()
-}
-
-fn build_hooks_settings(working_dir: &str) -> serde_json::Value {
-    let stop_gate = format!("{}/hooks/stop-gate.sh", working_dir);
-    let track_files = format!("{}/hooks/track-files.sh", working_dir);
-    serde_json::json!({
-        "hooks": {
-            "Stop": [{
-                "matcher": "",
-                "hooks": [{"type": "command", "command": stop_gate}]
-            }],
-            "PostToolUse": [{
-                "matcher": "Write|Edit",
-                "hooks": [{"type": "command", "command": track_files}]
-            }]
-        }
-    })
 }
 
 fn load_agent_content(name: &str) -> String {

@@ -108,6 +108,47 @@ pub async fn submit_pipeline(
     Ok(result)
 }
 
+/// Fetch step logs for a pipeline run.
+///
+/// Returns raw log text, suitable for verdict extraction.
+/// Optionally filter by stage_id and step_id.
+pub async fn fetch_run_logs(
+    client: &ApiClient,
+    run_id: Uuid,
+    stage_id: Option<&str>,
+    step_id: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let api_url = &client.base_url;
+    let admin_key = std::env::var("KAPABLE_ADMIN_API_KEY").ok();
+    let http = reqwest::Client::new();
+
+    let mut url = format!("{}/v1/pipeline-runs/{}/logs", api_url, run_id);
+    let mut params = Vec::new();
+    if let Some(s) = stage_id {
+        params.push(format!("stage_id={}", s));
+    }
+    if let Some(s) = step_id {
+        params.push(format!("step_id={}", s));
+    }
+    if !params.is_empty() {
+        url = format!("{}?{}", url, params.join("&"));
+    }
+
+    let mut request = http.get(&url);
+    if let Some(ref admin) = admin_key {
+        request = request.header("x-api-key", admin.as_str());
+    } else {
+        request = request.header("x-api-key", client.api_key());
+    }
+
+    let resp = request.send().await?;
+    if resp.status().is_success() {
+        Ok(resp.text().await?)
+    } else {
+        Err(format!("Failed to fetch logs ({})", resp.status()).into())
+    }
+}
+
 /// Poll for pipeline run completion.
 ///
 /// Returns when the run reaches a terminal status (succeeded, failed, cancelled).
