@@ -1628,16 +1628,20 @@ async fn run_pipeline_engine(
     let judge_content = load_agent_content("code-judge");
     let scrum_master_content = load_agent_content("scrum-master");
 
-    let cwd = std::env::current_dir()?.display().to_string();
-
-    // Build hooks settings from hook file paths
-    let hooks_settings = crate::pipeline_generator::build_hooks_settings(&cwd);
-
-    // Load product for brief + deploy profile
+    // Load product for brief + deploy profile + repo_path
     let product: serde_json::Value = client
         .get(&format!("/v1/products/{}", epic.product_id))
         .await
         .unwrap_or_default();
+
+    // Use product repo_path as working dir (where the agent runs), fall back to CWD
+    let working_dir = product["repo_path"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap().display().to_string());
+
+    // Build hooks settings from hook file paths
+    let hooks_settings = crate::pipeline_generator::build_hooks_settings(&working_dir);
     let product_brief = product["brief"].as_str().map(String::from);
     let deploy_profile = product["deploy_profile"]
         .as_str()
@@ -1682,7 +1686,7 @@ async fn run_pipeline_engine(
         builder_agent_content: builder_content,
         judge_agent_content: judge_content,
         scrum_master_agent_content: scrum_master_content,
-        working_dir: cwd,
+        working_dir,
         model_override: args.model.clone(),
         effort_override: args.effort.clone(),
         budget_override: args.budget_override,

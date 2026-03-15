@@ -132,8 +132,12 @@ async fn generate(
         args.epic_code
     );
 
-    let cwd = std::env::current_dir()?.display().to_string();
-    let hooks_settings = build_hooks_settings(&cwd);
+    // Use product repo_path as working dir (where the agent runs), fall back to CWD
+    let working_dir = product["repo_path"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap().display().to_string());
+    let hooks_settings = build_hooks_settings(&working_dir);
 
     let ctx = SprintPipelineContext {
         epic_code: epic.code.clone(),
@@ -145,7 +149,7 @@ async fn generate(
         builder_agent_content: load_agent_content("builder"),
         judge_agent_content: load_agent_content("code-judge"),
         scrum_master_agent_content: load_agent_content("scrum-master"),
-        working_dir: cwd,
+        working_dir,
         model_override: args.model,
         effort_override: None,
         budget_override: args.budget,
