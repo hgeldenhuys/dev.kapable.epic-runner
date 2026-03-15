@@ -11,6 +11,8 @@ use crate::api_client::ApiClient;
 struct SubmitRequest {
     pipeline_definition: serde_json::Value,
     pipeline_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    org_id: Option<Uuid>,
     repo_url: Option<String>,
     repo_ref: Option<String>,
     env: Option<serde_json::Value>,
@@ -35,6 +37,10 @@ pub struct PipelineRunStatus {
 }
 
 /// Submit a pipeline definition for agent execution.
+///
+/// Authenticates via `x-api-key` (admin key) or `Authorization: Bearer` (service token).
+/// The admin key is resolved from KAPABLE_ADMIN_API_KEY env var, config, or the
+/// client's API key if it looks like an admin key (sk_admin_*).
 pub async fn submit_pipeline(
     client: &ApiClient,
     definition: &PipelineDefinition,
@@ -45,9 +51,15 @@ pub async fn submit_pipeline(
 ) -> Result<SubmitResponse, Box<dyn std::error::Error>> {
     let pipeline_json = serde_json::to_value(definition)?;
 
+    // Resolve org_id from env or config for admin key auth
+    let org_id = std::env::var("KAPABLE_ORG_ID")
+        .ok()
+        .and_then(|s| s.parse::<Uuid>().ok());
+
     let req = SubmitRequest {
         pipeline_definition: pipeline_json,
         pipeline_name: Some(definition.name.clone()),
+        org_id,
         repo_url,
         repo_ref,
         env,
@@ -56,18 +68,35 @@ pub async fn submit_pipeline(
         timeout_secs: definition.timeout_secs.map(|t| t as i32),
     };
 
-    // Use raw reqwest since ApiClient is geared toward Data API (x-api-key),
-    // but the pipeline submission endpoint uses Bearer auth.
     let api_url = &client.base_url;
     let token = client.api_key();
 
+    // Resolve the correct auth header:
+    // 1. KAPABLE_ADMIN_API_KEY env var (explicit admin key)
+    // 2. Client key if it's an admin key (sk_admin_*)
+    // 3. Client key if it's a service token (st_ci_*)
+    // 4. Fall back to Bearer auth with whatever key we have
+    let admin_key = std::env::var("KAPABLE_ADMIN_API_KEY").ok();
+    let is_admin_key = token.starts_with("sk_admin_");
+    let is_service_token = token.starts_with("st_ci_");
+
     let http = reqwest::Client::new();
-    let resp = http
+    let mut request = http
         .post(format!("{}/v1/pipelines/run", api_url))
-        .header("Authorization", format!("Bearer {}", token))
-        .json(&req)
-        .send()
-        .await?;
+        .json(&req);
+
+    if let Some(ref admin) = admin_key {
+        request = request.header("x-api-key", admin.as_str());
+    } else if is_admin_key {
+        request = request.header("x-api-key", token);
+    } else if is_service_token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    } else {
+        // Data key — won't work, but try admin key from env as last resort
+        request = request.header("x-api-key", token);
+    }
+
+    let resp = request.send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -89,14 +118,19 @@ pub async fn wait_for_completion(
 ) -> Result<PipelineRunStatus, Box<dyn std::error::Error>> {
     let api_url = &client.base_url;
     let token = client.api_key();
+    let admin_key = std::env::var("KAPABLE_ADMIN_API_KEY").ok();
     let http = reqwest::Client::new();
 
     loop {
-        let resp = http
-            .get(format!("{}/v1/pipeline-runs/{}", api_url, run_id))
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
+        let mut request = http.get(format!("{}/v1/pipeline-runs/{}", api_url, run_id));
+        // Pipeline run detail accepts admin key, session auth, or service token.
+        // Use admin key if available, otherwise fall back to x-api-key.
+        if let Some(ref admin) = admin_key {
+            request = request.header("x-api-key", admin.as_str());
+        } else {
+            request = request.header("x-api-key", token);
+        }
+        let resp = request.send().await?;
 
         if resp.status().is_success() {
             let status: PipelineRunStatus = resp.json().await?;
