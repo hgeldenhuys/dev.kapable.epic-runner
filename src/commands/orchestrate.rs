@@ -1563,12 +1563,26 @@ async fn run_pipeline_engine(
 
     let cwd = std::env::current_dir()?.display().to_string();
 
+    // Build hooks settings from hook file paths
+    let hooks_settings = serde_json::json!({
+        "hooks": {
+            "Stop": [{
+                "matcher": "",
+                "hooks": [{"type": "command", "command": format!("{}/hooks/stop-gate.sh", cwd)}]
+            }],
+            "PostToolUse": [{
+                "matcher": "Write|Edit",
+                "hooks": [{"type": "command", "command": format!("{}/hooks/track-files.sh", cwd)}]
+            }]
+        }
+    });
+
     let ctx = SprintPipelineContext {
         epic_code: epic.code.clone(),
         sprint_number: sprint_num,
         session_id: session_id.to_string(),
         stories: story_contexts,
-        product_brief: None, // Could load from product config
+        product_brief: None, // TODO: load from product record
         epic_intent: epic.intent.clone(),
         builder_agent_content: builder_content,
         judge_agent_content: judge_content,
@@ -1578,6 +1592,14 @@ async fn run_pipeline_engine(
         effort_override: args.effort.clone(),
         budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
+        hooks_settings: Some(hooks_settings),
+        deploy_profile: "none".to_string(), // TODO: load from product record
+        deploy_app_id: None,
+        api_url: client.base_url.clone(),
+        api_key: client.api_key().to_string(),
+        product_definition_of_done: None,
+        previous_learnings: None,
+        serial: true,
     };
 
     let pipeline = generate_sprint_pipeline(&ctx);
