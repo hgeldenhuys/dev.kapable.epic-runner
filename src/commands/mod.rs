@@ -4,6 +4,7 @@ pub mod flow_validate;
 pub mod impediment;
 pub mod init;
 pub mod orchestrate;
+pub mod pipeline;
 pub mod product;
 pub mod research;
 pub mod retro;
@@ -48,6 +49,8 @@ pub enum Commands {
     FlowValidate(flow_validate::FlowValidateArgs),
     /// Manage research notes (add, list, show, link, unlink)
     Research(research::ResearchArgs),
+    /// Pipeline operations (generate YAML, submit runs)
+    Pipeline(pipeline::PipelineArgs),
     /// Show dashboard status
     Status(status::StatusArgs),
 }
@@ -70,6 +73,7 @@ pub async fn run(
         Commands::Impediment(args) => impediment::run(args, client, cli).await,
         Commands::FlowValidate(args) => Ok(flow_validate::run(args)?),
         Commands::Research(args) => research::run(args, client, cli).await,
+        Commands::Pipeline(args) => pipeline::run(args, client, cli).await,
         Commands::Status(args) => status::run(args, client, cli).await,
     }
 }
