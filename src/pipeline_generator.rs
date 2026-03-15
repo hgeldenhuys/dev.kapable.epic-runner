@@ -290,11 +290,13 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
 
     // -- Stage: commit-merge --
     // No cd — PIPELINE_WORKSPACE is the working directory.
+    // Uses $GIT_PUSH_URL (injected by agent daemon) for authenticated push.
+    // Falls back to origin if GIT_PUSH_URL is not set (local dev).
     let merge_script = format!(
         "git add -A && \
          git diff --cached --quiet && echo 'No changes to commit' || \
-         git commit -m 'sprint {num}: {epic}' && \
-         git push origin {branch} || true",
+         (git commit -m 'sprint {num}: {epic}' && \
+         git push ${{GIT_PUSH_URL:-origin}} {branch}) || true",
         num = ctx.sprint_number,
         epic = ctx.epic_code,
         branch = ctx.epic_branch,
@@ -759,8 +761,12 @@ mod tests {
         match &commit.steps[0] {
             StepDefinition::Bash { def, .. } => {
                 assert!(
-                    def.command.contains("git push origin epic/auth-001"),
+                    def.command.contains("epic/auth-001"),
                     "commit stage must push to epic branch"
+                );
+                assert!(
+                    def.command.contains("GIT_PUSH_URL:-origin"),
+                    "commit stage must use GIT_PUSH_URL with origin fallback"
                 );
                 assert!(
                     def.working_dir.is_none(),
