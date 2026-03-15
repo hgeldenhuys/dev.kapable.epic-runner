@@ -1721,6 +1721,18 @@ async fn run_pipeline_engine(
         result.run_id, result.job_id
     );
 
+    // Mark sprint as executing so Mission Control detects it as active
+    let _ = client
+        .patch::<_, serde_json::Value>(
+            &format!("/v1/er_sprints/{}", sprint_id),
+            &json!({
+                "status": "executing",
+                "started_at": chrono::Utc::now().to_rfc3339(),
+                "pipeline_run_id": result.run_id.to_string(),
+            }),
+        )
+        .await;
+
     // Monitor until completion
     let final_status = wait_for_completion(client, result.run_id, 10).await?;
 
