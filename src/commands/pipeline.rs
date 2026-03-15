@@ -95,20 +95,21 @@ async fn generate(
         .get(&format!("/v1/products/{}", epic.product_id))
         .await?;
 
-    // 3. Load ready stories for this product
+    // 3. Load stories for this epic (filter by epic_code, not product)
     let stories_resp: DataWrapper<Vec<serde_json::Value>> = client
-        .get_with_params(
-            "/v1/stories",
-            &[("product_id", &epic.product_id.to_string())],
-        )
+        .get_with_params("/v1/stories", &[("epic_code", args.epic_code.as_str())])
         .await?;
 
     let story_contexts: Vec<StoryContext> = stories_resp
         .data
         .iter()
         .filter(|s| {
+            // Client-side filter: server may ignore the epic_code param
+            let matches_epic = s["epic_code"].as_str() == Some(args.epic_code.as_str());
             let status = s["status"].as_str().unwrap_or("");
-            status == "ready" || status == "planned"
+            let eligible = status == "ready" || status == "planned";
+            let has_code = s["code"].as_str().is_some_and(|c| !c.is_empty());
+            matches_epic && eligible && has_code
         })
         .map(|s| StoryContext {
             code: s["code"].as_str().unwrap_or("?").to_string(),
@@ -122,7 +123,7 @@ async fn generate(
         .collect();
 
     if story_contexts.is_empty() {
-        return Err("No ready/planned stories found for this epic's product".into());
+        return Err(format!("No ready/planned stories found for epic {}", args.epic_code).into());
     }
 
     eprintln!(

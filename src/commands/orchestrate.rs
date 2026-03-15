@@ -1574,11 +1574,21 @@ async fn run_pipeline_engine(
         sprint_num
     );
 
-    // Convert stories to StoryContext
+    // Convert stories to StoryContext, skipping any without a code
     let mut story_contexts: Vec<StoryContext> = Vec::new();
     for s in stories {
+        let code = match s["code"].as_str() {
+            Some(c) if !c.is_empty() => c.to_string(),
+            _ => {
+                eprintln!(
+                    "[pipeline] Skipping story without code: {}",
+                    s["title"].as_str().unwrap_or("(untitled)")
+                );
+                continue;
+            }
+        };
         story_contexts.push(StoryContext {
-            code: s["code"].as_str().unwrap_or("?").to_string(),
+            code,
             id: s["id"]
                 .as_str()
                 .unwrap_or(&Uuid::new_v4().to_string())
