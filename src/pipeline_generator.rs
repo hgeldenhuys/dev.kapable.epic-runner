@@ -110,6 +110,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
         .iter()
         .map(|s| format!("build-{}", s.code.to_lowercase()))
         .collect();
+    let mut enforce_stage_ids: Vec<String> = Vec::new();
 
     // Build system prompt from product brief + previous learnings
     let system_prompt = build_system_prompt(
@@ -152,18 +153,34 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
             .or_else(|| Some("opus".to_string()));
         let budget = ctx.budget_override.unwrap_or(5.0);
 
+        // For parallel execution, each story needs its own worktree to avoid git conflicts
+        let worktree = if !ctx.serial {
+            Some(format!("story-{}", story.code.to_lowercase()))
+        } else {
+            None
+        };
+
+        let mut build_common = step_common(
+            &format!("build-{}", story.code.to_lowercase()),
+            Some(&format!("Execute story {}", story.code)),
+            Some(3600),
+        );
+        // Prevent builders from making commits outside the controlled flow
+        build_common
+            .env
+            .insert("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS".to_string(), "1".to_string());
+        build_common
+            .env
+            .insert("CMUX_CLAUDE_HOOKS_DISABLED".to_string(), "1".to_string());
+
         stages.push(StageDefinition {
             id: build_stage_ids[i].clone(),
             label: Some(format!("Build: {} — {}", story.code, story.title)),
-            depends_on: depends,
+            depends_on: depends.clone(),
             steps: vec![StepDefinition::Agent {
-                common: step_common(
-                    &format!("build-{}", story.code.to_lowercase()),
-                    Some(&format!("Execute story {}", story.code)),
-                    Some(3600),
-                ),
+                common: build_common,
                 def: AgentStepDef {
-                    model,
+                    model: model.clone(),
                     effort: ctx
                         .effort_override
                         .clone()
@@ -176,7 +193,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                     agent_dir: Some(ctx.working_dir.clone()),
                     resume: false,
                     chrome: false,
-                    worktree: None,
+                    worktree: worktree.clone(),
                     max_turns: 200,
                     heartbeat_timeout_secs: 120,
                     add_dirs: ctx.add_dirs.clone(),
@@ -186,6 +203,66 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
             timeout_secs: Some(3600),
             allow_failure: true, // Individual story failure shouldn't block judge
             run_on: RunCondition::default(),
+            condition: None,
+            matrix: None,
+        });
+
+        // -- Stage: enforce-{code} --
+        // Post-build enforcement: check if builder left tasks/ACs unmarked.
+        // If incomplete, resume the builder session with an enforcement prompt.
+        // This replaces the ceremony supervisor's stop-hook re-entry loop.
+        let enforce_prompt = format!(
+            "STOP. You were building story {} but exited without marking all tasks done \
+             and acceptance criteria verified. Review your work:\n\n\
+             Mark each completed task:\n  epic-runner backlog task-done {} <INDEX>\n\
+             Verify each acceptance criterion:\n  epic-runner backlog ac-verify {} <INDEX>\n\
+             Or if genuinely blocked:\n  epic-runner backlog block {} --reason \"<why>\"\n\n\
+             You CANNOT stop until every task is done=true and every AC is verified=true, \
+             or the story is blocked.",
+            story.code, story.code, story.code, story.code,
+        );
+
+        let mut enforce_common = step_common(
+            &format!("enforce-{}", story.code.to_lowercase()),
+            Some(&format!("Task enforcement for {}", story.code)),
+            Some(900),
+        );
+        enforce_common
+            .env
+            .insert("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS".to_string(), "1".to_string());
+        enforce_common
+            .env
+            .insert("CMUX_CLAUDE_HOOKS_DISABLED".to_string(), "1".to_string());
+
+        // Enforcement stage: resume the builder session to mark tasks
+        enforce_stage_ids.push(format!("enforce-{}", story.code.to_lowercase()));
+        stages.push(StageDefinition {
+            id: format!("enforce-{}", story.code.to_lowercase()),
+            label: Some(format!("Enforce: {} — mark tasks/ACs", story.code)),
+            depends_on: vec![build_stage_ids[i].clone()],
+            steps: vec![StepDefinition::Agent {
+                common: enforce_common,
+                def: AgentStepDef {
+                    model: model.clone(),
+                    effort: "high".to_string(),
+                    session_id: Some(story.id.clone()),
+                    budget_usd: 1.0,
+                    prompt: enforce_prompt,
+                    system_prompt: None,
+                    agent: None,
+                    agent_dir: Some(ctx.working_dir.clone()),
+                    resume: true, // Resume the builder session
+                    chrome: false,
+                    worktree,
+                    max_turns: 30,
+                    heartbeat_timeout_secs: 60,
+                    add_dirs: ctx.add_dirs.clone(),
+                    hooks_settings: ctx.hooks_settings.clone(),
+                },
+            }],
+            timeout_secs: Some(900),
+            allow_failure: true, // Enforcement failure shouldn't block judge
+            run_on: RunCondition::Always, // Always check, even if build failed
             condition: None,
             matrix: None,
         });
@@ -219,10 +296,17 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
             .unwrap_or_default(),
     );
 
+    // Judge depends on enforcement stages (which depend on build stages)
+    let judge_depends = if enforce_stage_ids.is_empty() {
+        build_stage_ids.clone()
+    } else {
+        enforce_stage_ids.clone()
+    };
+
     stages.push(StageDefinition {
         id: "judge-code".to_string(),
         label: Some("Code quality review".to_string()),
-        depends_on: build_stage_ids.clone(),
+        depends_on: judge_depends,
         steps: vec![StepDefinition::Agent {
             common: step_common("judge", Some("Judge code quality"), Some(1800)),
             def: AgentStepDef {
@@ -496,14 +580,15 @@ mod tests {
 
         let pipeline = generate_sprint_pipeline(&ctx);
         assert_eq!(pipeline.name, "AUTH-001-sprint-1");
-        // source + build + judge + commit + retro + output = 6 stages
-        assert_eq!(pipeline.stages.len(), 6);
+        // source + build + enforce + judge + commit + retro + output = 7 stages
+        assert_eq!(pipeline.stages.len(), 7);
         assert_eq!(pipeline.stages[0].id, "source");
         assert!(pipeline.stages[1].id.starts_with("build-"));
-        assert_eq!(pipeline.stages[2].id, "judge-code");
-        assert_eq!(pipeline.stages[3].id, "commit-merge");
-        assert!(pipeline.stages[4].id.starts_with("retro-"));
-        assert_eq!(pipeline.stages[5].id, "output");
+        assert!(pipeline.stages[2].id.starts_with("enforce-"));
+        assert_eq!(pipeline.stages[3].id, "judge-code");
+        assert_eq!(pipeline.stages[4].id, "commit-merge");
+        assert!(pipeline.stages[5].id.starts_with("retro-"));
+        assert_eq!(pipeline.stages[6].id, "output");
 
         // Build stage should be Agent, not Bash
         match &pipeline.stages[1].steps[0] {
@@ -515,8 +600,17 @@ mod tests {
             _ => panic!("Expected Agent step for build stage"),
         }
 
-        // Retro stage should resume the builder session
-        match &pipeline.stages[4].steps[0] {
+        // Enforcement stage resumes the builder session
+        match &pipeline.stages[2].steps[0] {
+            StepDefinition::Agent { def, .. } => {
+                assert!(def.resume);
+                assert_eq!(def.session_id.as_deref(), Some("uuid-1"));
+            }
+            _ => panic!("Expected Agent step for enforce stage"),
+        }
+
+        // Retro stage should also resume the builder session
+        match &pipeline.stages[5].steps[0] {
             StepDefinition::Agent { def, .. } => {
                 assert!(def.resume);
                 assert_eq!(def.session_id.as_deref(), Some("uuid-1"));
@@ -535,12 +629,15 @@ mod tests {
         ];
 
         let pipeline = generate_sprint_pipeline(&ctx);
-        // source + 2 builds + judge + commit + 2 retros + output = 8
-        assert_eq!(pipeline.stages.len(), 8);
+        // source + 2*(build+enforce) + judge + commit + 2 retros + output = 10
+        assert_eq!(pipeline.stages.len(), 10);
 
         // Serial: second build depends on first build
         assert_eq!(pipeline.stages[1].depends_on, vec!["source"]);
+        // enforce-er-001 depends on build-er-001
         assert_eq!(pipeline.stages[2].depends_on, vec!["build-er-001"]);
+        // build-er-002 depends on build-er-001 (serial chain)
+        assert_eq!(pipeline.stages[3].depends_on, vec!["build-er-001"]);
     }
 
     #[test]
@@ -556,7 +653,16 @@ mod tests {
 
         // Parallel: both builds depend on source
         assert_eq!(pipeline.stages[1].depends_on, vec!["source"]);
-        assert_eq!(pipeline.stages[2].depends_on, vec!["source"]);
+        // stages[2] = enforce-er-001, stages[3] = build-er-002
+        assert_eq!(pipeline.stages[3].depends_on, vec!["source"]);
+
+        // Parallel builds should have worktrees
+        match &pipeline.stages[1].steps[0] {
+            StepDefinition::Agent { def, .. } => {
+                assert!(def.worktree.is_some(), "parallel builds need worktrees");
+            }
+            _ => panic!("Expected Agent step"),
+        }
     }
 
     #[test]
@@ -567,8 +673,8 @@ mod tests {
         ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
 
         let pipeline = generate_sprint_pipeline(&ctx);
-        // source + build + judge + commit + deploy + retro + output = 7
-        assert_eq!(pipeline.stages.len(), 7);
+        // source + build + enforce + judge + commit + deploy + retro + output = 8
+        assert_eq!(pipeline.stages.len(), 8);
 
         // Deploy stage exists and depends on commit-merge
         let deploy = pipeline.stages.iter().find(|s| s.id == "deploy").unwrap();
@@ -608,18 +714,95 @@ mod tests {
         ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
 
         let pipeline = generate_sprint_pipeline(&ctx);
+        // Build stage (index 1) should have hooks
         match &pipeline.stages[1].steps[0] {
             StepDefinition::Agent { def, .. } => {
                 assert!(def.hooks_settings.is_some());
             }
             _ => panic!("Expected Agent step"),
         }
-        // Judge should NOT have hooks
+        // Enforce stage (index 2) should also have hooks
         match &pipeline.stages[2].steps[0] {
+            StepDefinition::Agent { def, .. } => {
+                assert!(def.hooks_settings.is_some());
+            }
+            _ => panic!("Expected Agent step"),
+        }
+        // Judge stage (index 3) should NOT have hooks
+        match &pipeline.stages[3].steps[0] {
             StepDefinition::Agent { def, .. } => {
                 assert!(def.hooks_settings.is_none());
             }
             _ => panic!("Expected Agent step"),
+        }
+    }
+
+    #[test]
+    fn test_env_vars_set_on_builder_steps() {
+        let mut ctx = test_ctx_defaults();
+        ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
+
+        let pipeline = generate_sprint_pipeline(&ctx);
+        // Build stage common.env should have git instruction disable
+        let build_common = pipeline.stages[1].steps[0].common();
+        assert_eq!(
+            build_common.env.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"),
+            Some(&"1".to_string())
+        );
+        assert_eq!(
+            build_common.env.get("CMUX_CLAUDE_HOOKS_DISABLED"),
+            Some(&"1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_serial_has_no_worktree() {
+        let mut ctx = test_ctx_defaults();
+        ctx.serial = true;
+        ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
+
+        let pipeline = generate_sprint_pipeline(&ctx);
+        match &pipeline.stages[1].steps[0] {
+            StepDefinition::Agent { def, .. } => {
+                assert!(def.worktree.is_none(), "serial builds don't need worktrees");
+            }
+            _ => panic!("Expected Agent step"),
+        }
+    }
+
+    #[test]
+    fn test_parallel_has_worktree() {
+        let mut ctx = test_ctx_defaults();
+        ctx.serial = false;
+        ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
+
+        let pipeline = generate_sprint_pipeline(&ctx);
+        match &pipeline.stages[1].steps[0] {
+            StepDefinition::Agent { def, .. } => {
+                assert_eq!(def.worktree.as_deref(), Some("story-er-001"));
+            }
+            _ => panic!("Expected Agent step"),
+        }
+    }
+
+    #[test]
+    fn test_enforcement_stage_resumes_builder() {
+        let mut ctx = test_ctx_defaults();
+        ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
+
+        let pipeline = generate_sprint_pipeline(&ctx);
+        // Enforce stage at index 2
+        let enforce = &pipeline.stages[2];
+        assert_eq!(enforce.id, "enforce-er-001");
+        assert_eq!(enforce.depends_on, vec!["build-er-001"]);
+        match &enforce.steps[0] {
+            StepDefinition::Agent { def, .. } => {
+                assert!(def.resume, "enforcement should resume builder session");
+                assert_eq!(def.session_id.as_deref(), Some("uuid-1"));
+                assert!(def.prompt.contains("task-done"));
+                assert!(def.prompt.contains("ac-verify"));
+            }
+            _ => panic!("Expected Agent step for enforce stage"),
         }
     }
 
