@@ -61,6 +61,14 @@ pub struct SubmitArgs {
     /// Poll for completion (default: submit and return immediately)
     #[arg(long, default_value = "false")]
     pub wait: bool,
+
+    /// Git repo URL for agent workspace (agent daemon clones/pulls this)
+    #[arg(long)]
+    pub repo_url: Option<String>,
+
+    /// Git branch/ref for the workspace checkout
+    #[arg(long)]
+    pub repo_ref: Option<String>,
 }
 
 pub async fn run(
@@ -132,12 +140,9 @@ async fn generate(
         args.epic_code
     );
 
-    // Use product repo_path as working dir (where the agent runs), fall back to CWD
-    let working_dir = product["repo_path"]
-        .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap().display().to_string());
-    let hooks_settings = build_hooks_settings(&working_dir);
+    // Hooks live in the epic-runner directory (CWD where generate runs)
+    let hooks_dir = std::env::current_dir()?.display().to_string();
+    let hooks_settings = build_hooks_settings(&hooks_dir);
 
     let ctx = SprintPipelineContext {
         epic_code: epic.code.clone(),
@@ -149,7 +154,6 @@ async fn generate(
         builder_agent_content: load_agent_content("builder"),
         judge_agent_content: load_agent_content("code-judge"),
         scrum_master_agent_content: load_agent_content("scrum-master"),
-        working_dir,
         model_override: args.model,
         effort_override: None,
         budget_override: args.budget,
@@ -198,9 +202,15 @@ async fn submit(
         pipeline.stages.len()
     );
 
-    let result =
-        crate::pipeline_submitter::submit_pipeline(client, &pipeline, None, None, None, None)
-            .await?;
+    let result = crate::pipeline_submitter::submit_pipeline(
+        client,
+        &pipeline,
+        args.repo_url,
+        args.repo_ref,
+        None,
+        None,
+    )
+    .await?;
 
     eprintln!(
         "[submit] Submitted: run_id={}, job_id={}",

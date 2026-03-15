@@ -1628,20 +1628,17 @@ async fn run_pipeline_engine(
     let judge_content = load_agent_content("code-judge");
     let scrum_master_content = load_agent_content("scrum-master");
 
-    // Load product for brief + deploy profile + repo_path
+    // Load product for brief + deploy profile + repo_url
     let product: serde_json::Value = client
         .get(&format!("/v1/products/{}", epic.product_id))
         .await
         .unwrap_or_default();
 
-    // Use product repo_path as working dir (where the agent runs), fall back to CWD
-    let working_dir = product["repo_path"]
-        .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap().display().to_string());
+    // Hooks live in the epic-runner directory (CWD where orchestrate runs)
+    let hooks_dir = std::env::current_dir()?.display().to_string();
+    let hooks_settings = crate::pipeline_generator::build_hooks_settings(&hooks_dir);
 
-    // Build hooks settings from hook file paths
-    let hooks_settings = crate::pipeline_generator::build_hooks_settings(&working_dir);
+    let product_repo_url = product["repo_url"].as_str().map(String::from);
     let product_brief = product["brief"].as_str().map(String::from);
     let deploy_profile = product["deploy_profile"]
         .as_str()
@@ -1686,7 +1683,6 @@ async fn run_pipeline_engine(
         builder_agent_content: builder_content,
         judge_agent_content: judge_content,
         scrum_master_agent_content: scrum_master_content,
-        working_dir,
         model_override: args.model.clone(),
         effort_override: args.effort.clone(),
         budget_override: args.budget_override,
@@ -1709,12 +1705,12 @@ async fn run_pipeline_engine(
         pipeline.stages.len()
     );
 
-    // Submit to platform
+    // Submit to platform with product repo_url for workspace preparation
     let result = submit_pipeline(
         client,
         &pipeline,
-        None, // repo_url -- agent runs locally
-        None,
+        product_repo_url,
+        None, // repo_ref — source stage creates the epic branch
         None,
         Some(vec!["claude".to_string()]),
     )

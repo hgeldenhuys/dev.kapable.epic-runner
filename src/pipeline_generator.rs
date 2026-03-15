@@ -23,7 +23,6 @@ pub struct SprintPipelineContext {
     pub builder_agent_content: String,
     pub judge_agent_content: String,
     pub scrum_master_agent_content: String,
-    pub working_dir: String,
     pub model_override: Option<String>,
     pub effort_override: Option<String>,
     pub budget_override: Option<f64>,
@@ -85,9 +84,10 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
             json = story_json_escaped,
         ));
     }
+    // Branch checkout + story data emission.
+    // No cd — the agent daemon sets PIPELINE_WORKSPACE as the working directory.
     let source_command = format!(
-        "cd {dir} && git checkout -B {branch} 2>/dev/null || git checkout {branch} && {story_emissions}",
-        dir = ctx.working_dir,
+        "git checkout -B {branch} 2>/dev/null || git checkout {branch} && {story_emissions}",
         branch = ctx.epic_branch,
         story_emissions = source_commands.join(" && "),
     );
@@ -100,7 +100,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
             common: step_common("emit-stories", Some("Emit story data"), Some(30)),
             def: BashStepDef {
                 command: source_command,
-                working_dir: Some(ctx.working_dir.clone()),
+                working_dir: None, // Resolved by PIPELINE_WORKSPACE
             },
         }],
         timeout_secs: Some(60),
@@ -201,7 +201,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                     prompt,
                     system_prompt: builder_system_prompt.clone(),
                     agent: None,
-                    agent_dir: Some(ctx.working_dir.clone()),
+                    agent_dir: None, // Resolved by PIPELINE_WORKSPACE
                     resume: false,
                     chrome: false,
                     worktree: None,
@@ -264,7 +264,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                 prompt: judge_prompt,
                 system_prompt: judge_system_prompt.clone(),
                 agent: None,
-                agent_dir: Some(ctx.working_dir.clone()),
+                agent_dir: None, // Resolved by PIPELINE_WORKSPACE
                 resume: false,
                 chrome: false,
                 worktree: None,
@@ -282,12 +282,12 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
     });
 
     // -- Stage: commit-merge --
+    // No cd — PIPELINE_WORKSPACE is the working directory.
     let merge_script = format!(
-        "cd {dir} && git add -A && \
+        "git add -A && \
          git diff --cached --quiet && echo 'No changes to commit' || \
          git commit -m 'sprint {num}: {epic}' && \
          git push origin {branch} || true",
-        dir = ctx.working_dir,
         num = ctx.sprint_number,
         epic = ctx.epic_code,
         branch = ctx.epic_branch,
@@ -301,7 +301,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
             common: step_common("merge", Some("Merge changes"), Some(120)),
             def: BashStepDef {
                 command: merge_script,
-                working_dir: Some(ctx.working_dir.clone()),
+                working_dir: None, // Resolved by PIPELINE_WORKSPACE
             },
         }],
         timeout_secs: Some(300),
@@ -380,8 +380,8 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                     prompt: retro_prompt,
                     system_prompt: retro_system_prompt.clone(),
                     agent: None,
-                    agent_dir: Some(ctx.working_dir.clone()),
-                    resume: true, // Resume the builder session
+                    agent_dir: None, // Resolved by PIPELINE_WORKSPACE
+                    resume: true,    // Resume the builder session
                     chrome: false,
                     worktree: None,
                     max_turns: 30,
@@ -525,7 +525,6 @@ mod tests {
             builder_agent_content: "You are a builder".to_string(),
             judge_agent_content: "You are a judge".to_string(),
             scrum_master_agent_content: "You are a scrum master".to_string(),
-            working_dir: "/tmp/work".to_string(),
             model_override: None,
             effort_override: None,
             budget_override: None,
@@ -725,6 +724,10 @@ mod tests {
                     def.command.contains("git checkout -B epic/auth-001"),
                     "source stage must checkout epic branch"
                 );
+                assert!(
+                    def.working_dir.is_none(),
+                    "working_dir should be None — resolved by PIPELINE_WORKSPACE"
+                );
             }
             _ => panic!("Expected Bash step for source stage"),
         }
@@ -748,8 +751,31 @@ mod tests {
                     def.command.contains("git push origin epic/auth-001"),
                     "commit stage must push to epic branch"
                 );
+                assert!(
+                    def.working_dir.is_none(),
+                    "working_dir should be None — resolved by PIPELINE_WORKSPACE"
+                );
             }
             _ => panic!("Expected Bash step for commit stage"),
+        }
+    }
+
+    #[test]
+    fn test_no_hardcoded_paths_in_agent_steps() {
+        let mut ctx = test_ctx_defaults();
+        ctx.stories = vec![story("ER-001", "uuid-1", "Feature")];
+
+        let pipeline = generate_sprint_pipeline(&ctx);
+        for stage in &pipeline.stages {
+            for step in &stage.steps {
+                if let StepDefinition::Agent { def, .. } = step {
+                    assert!(
+                        def.agent_dir.is_none(),
+                        "stage {} agent_dir must be None — workspace managed by daemon",
+                        stage.id
+                    );
+                }
+            }
         }
     }
 
