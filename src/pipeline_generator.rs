@@ -135,6 +135,13 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
         None,
     );
 
+    // Pre-generate session IDs per story so retro can resume the builder session
+    let story_session_ids: Vec<String> = ctx
+        .stories
+        .iter()
+        .map(|_| uuid::Uuid::new_v4().to_string())
+        .collect();
+
     for (i, story) in ctx.stories.iter().enumerate() {
         let prompt = format!(
             "You are executing story {} for epic {}.\n\n\
@@ -196,7 +203,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                         .effort_override
                         .clone()
                         .unwrap_or_else(|| "high".to_string()),
-                    session_id: Some(story.id.clone()),
+                    session_id: Some(story_session_ids[i].clone()),
                     budget_usd: budget,
                     prompt,
                     system_prompt: builder_system_prompt.clone(),
@@ -351,7 +358,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
 
     // -- Stages: retro-{code} --
     // Resume each builder session for retrospective interview.
-    for story in &ctx.stories {
+    for (i, story) in ctx.stories.iter().enumerate() {
         let retro_prompt = format!(
             "Interview the builder about story {}.\n\
              What went well? What could improve? What should the next sprint know?\n\
@@ -375,7 +382,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                         .clone()
                         .or_else(|| Some("sonnet".to_string())),
                     effort: "medium".to_string(),
-                    session_id: Some(story.id.clone()),
+                    session_id: Some(story_session_ids[i].clone()),
                     budget_usd: 1.0,
                     prompt: retro_prompt,
                     system_prompt: retro_system_prompt.clone(),
@@ -572,21 +579,25 @@ mod tests {
         assert_eq!(pipeline.stages[5].id, "output");
 
         // Build stage should be Agent, not Bash
-        match &pipeline.stages[1].steps[0] {
+        let build_session_id = match &pipeline.stages[1].steps[0] {
             StepDefinition::Agent { def, .. } => {
                 assert_eq!(def.model.as_deref(), Some("opus"));
-                assert_eq!(def.session_id.as_deref(), Some("uuid-1"));
+                assert!(def.session_id.is_some(), "builder needs a session ID");
                 assert!(!def.resume);
                 assert!(def.worktree.is_none(), "no worktrees — branch-based now");
+                def.session_id.clone()
             }
             _ => panic!("Expected Agent step for build stage"),
-        }
+        };
 
-        // Retro stage should resume the builder session
+        // Retro stage should resume the builder session with the same session ID
         match &pipeline.stages[4].steps[0] {
             StepDefinition::Agent { def, .. } => {
                 assert!(def.resume);
-                assert_eq!(def.session_id.as_deref(), Some("uuid-1"));
+                assert_eq!(
+                    def.session_id, build_session_id,
+                    "retro must resume the builder's session"
+                );
             }
             _ => panic!("Expected Agent step for retro stage"),
         }
