@@ -259,7 +259,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                     .clone()
                     .or_else(|| Some("sonnet".to_string())),
                 effort: "high".to_string(),
-                session_id: Some(format!("judge-{}-s{}", ctx.epic_code, ctx.sprint_number)),
+                session_id: Some(uuid::Uuid::new_v4().to_string()),
                 budget_usd: 2.0,
                 prompt: judge_prompt,
                 system_prompt: judge_system_prompt.clone(),
