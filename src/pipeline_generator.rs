@@ -231,10 +231,7 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
                     .clone()
                     .or_else(|| Some("sonnet".to_string())),
                 effort: "high".to_string(),
-                session_id: Some(format!(
-                    "judge-{}-s{}",
-                    ctx.epic_code, ctx.sprint_number
-                )),
+                session_id: Some(format!("judge-{}-s{}", ctx.epic_code, ctx.sprint_number)),
                 budget_usd: 2.0,
                 prompt: judge_prompt,
                 system_prompt: system_prompt.clone(),
@@ -543,10 +540,7 @@ mod tests {
 
         // Serial: second build depends on first build
         assert_eq!(pipeline.stages[1].depends_on, vec!["source"]);
-        assert_eq!(
-            pipeline.stages[2].depends_on,
-            vec!["build-er-001"]
-        );
+        assert_eq!(pipeline.stages[2].depends_on, vec!["build-er-001"]);
     }
 
     #[test]
@@ -581,7 +575,11 @@ mod tests {
         assert_eq!(deploy.depends_on, vec!["commit-merge"]);
 
         // Retro depends on deploy (not commit-merge)
-        let retro = pipeline.stages.iter().find(|s| s.id.starts_with("retro-")).unwrap();
+        let retro = pipeline
+            .stages
+            .iter()
+            .find(|s| s.id.starts_with("retro-"))
+            .unwrap();
         assert_eq!(retro.depends_on, vec!["deploy"]);
     }
 
@@ -595,7 +593,11 @@ mod tests {
         // No deploy stage
         assert!(pipeline.stages.iter().all(|s| s.id != "deploy"));
         // Retro depends on commit-merge
-        let retro = pipeline.stages.iter().find(|s| s.id.starts_with("retro-")).unwrap();
+        let retro = pipeline
+            .stages
+            .iter()
+            .find(|s| s.id.starts_with("retro-"))
+            .unwrap();
         assert_eq!(retro.depends_on, vec!["commit-merge"]);
     }
 
