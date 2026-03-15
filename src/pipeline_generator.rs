@@ -292,11 +292,13 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
     // No cd — PIPELINE_WORKSPACE is the working directory.
     // Uses $GIT_PUSH_URL (injected by agent daemon) for authenticated push.
     // Falls back to origin if GIT_PUSH_URL is not set (local dev).
+    //
+    // Always push — the builder may have already committed inside its session.
+    // Stage any remaining uncommitted work, commit if needed, then push regardless.
     let merge_script = format!(
         "git add -A && \
-         git diff --cached --quiet && echo 'No changes to commit' || \
-         (git commit -m 'sprint {num}: {epic}' && \
-         git push ${{GIT_PUSH_URL:-origin}} {branch}) || true",
+         (git diff --cached --quiet || git commit -m 'sprint {num}: {epic}') && \
+         git push ${{GIT_PUSH_URL:-origin}} {branch}",
         num = ctx.sprint_number,
         epic = ctx.epic_code,
         branch = ctx.epic_branch,
