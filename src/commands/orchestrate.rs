@@ -1496,7 +1496,8 @@ fn setup_log_redirect(
 /// Execute a sprint via the pipeline engine instead of the ceremony child process.
 ///
 /// Generates a PipelineDefinition from the sprint's stories, submits it to the
-/// platform API, and polls until completion.
+/// platform API, and polls until completion. Loads product brief, deploy profile,
+/// and previous learnings for full context injection.
 #[allow(clippy::too_many_arguments)]
 async fn run_pipeline_engine(
     args: &OrchestrateArgs,
@@ -1577,12 +1578,51 @@ async fn run_pipeline_engine(
         }
     });
 
+    // Load product for brief + deploy profile
+    let product: serde_json::Value = client
+        .get(&format!("/v1/products/{}", epic.product_id))
+        .await
+        .unwrap_or_default();
+    let product_brief = product["brief"].as_str().map(String::from);
+    let deploy_profile = product["deploy_profile"]
+        .as_str()
+        .unwrap_or("none")
+        .to_string();
+    let deploy_app_id = product["deploy_app_id"].as_str().map(String::from);
+    let product_dod = product["definition_of_done"].as_str().map(String::from);
+
+    // Load previous learnings from past sprints (if any)
+    let previous_learnings = if sprint_num > 1 {
+        let epic_id_str = epic.id.to_string();
+        let learnings_resp: Result<DataWrapper<Vec<serde_json::Value>>, _> = client
+            .get_with_params("/v1/sprint_learnings", &[("epic_id", &epic_id_str)])
+            .await;
+        match learnings_resp {
+            Ok(resp) => {
+                let combined: String = resp
+                    .data
+                    .iter()
+                    .filter_map(|l| l["learnings"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if combined.is_empty() {
+                    None
+                } else {
+                    Some(combined)
+                }
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     let ctx = SprintPipelineContext {
         epic_code: epic.code.clone(),
         sprint_number: sprint_num,
         session_id: session_id.to_string(),
         stories: story_contexts,
-        product_brief: None, // TODO: load from product record
+        product_brief,
         epic_intent: epic.intent.clone(),
         builder_agent_content: builder_content,
         judge_agent_content: judge_content,
@@ -1593,12 +1633,12 @@ async fn run_pipeline_engine(
         budget_override: args.budget_override,
         add_dirs: args.add_dir.clone(),
         hooks_settings: Some(hooks_settings),
-        deploy_profile: "none".to_string(), // TODO: load from product record
-        deploy_app_id: None,
+        deploy_profile,
+        deploy_app_id,
         api_url: client.base_url.clone(),
         api_key: client.api_key().to_string(),
-        product_definition_of_done: None,
-        previous_learnings: None,
+        product_definition_of_done: product_dod,
+        previous_learnings,
         serial: true,
     };
 
@@ -1616,7 +1656,7 @@ async fn run_pipeline_engine(
         None, // repo_url -- agent runs locally
         None,
         None,
-        Some(vec!["claude".to_string(), "rust".to_string()]),
+        Some(vec!["claude".to_string()]),
     )
     .await?;
 
