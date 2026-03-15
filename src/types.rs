@@ -57,7 +57,7 @@ pub struct CreateProduct {
 
 /// A single testable acceptance criterion for a story.
 /// Structured so agents and humans can verify completion mechanically.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AcceptanceCriterion {
     /// The criterion text (Given/When/Then as single string, or plain assertion)
     #[serde(default)]
@@ -111,7 +111,7 @@ impl AcceptanceCriterion {
 // ── Story Task ───────────────────────────────
 
 /// A discrete unit of work within a story, assigned to a persona.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StoryTask {
     /// What needs to be done
     #[serde(default)]
@@ -131,6 +131,74 @@ pub struct StoryTask {
     /// Brief note on what was done (filled on completion)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+}
+
+/// Deserialize acceptance criteria that can be either plain strings or structured objects.
+fn deserialize_flexible_acs<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<AcceptanceCriterion>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let opt: Option<Vec<serde_json::Value>> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(items) => {
+            let mut acs = Vec::new();
+            for item in items {
+                match item {
+                    serde_json::Value::String(s) => {
+                        acs.push(AcceptanceCriterion {
+                            criterion: s,
+                            ..Default::default()
+                        });
+                    }
+                    obj @ serde_json::Value::Object(_) => {
+                        let ac: AcceptanceCriterion =
+                            serde_json::from_value(obj).map_err(D::Error::custom)?;
+                        acs.push(ac);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(acs))
+        }
+    }
+}
+
+/// Deserialize tasks that can be either plain strings or structured objects.
+fn deserialize_flexible_tasks<'de, D>(deserializer: D) -> Result<Option<Vec<StoryTask>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let opt: Option<Vec<serde_json::Value>> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(items) => {
+            let mut tasks = Vec::new();
+            for item in items {
+                match item {
+                    serde_json::Value::String(s) => {
+                        tasks.push(StoryTask {
+                            description: s,
+                            ..Default::default()
+                        });
+                    }
+                    obj @ serde_json::Value::Object(_) => {
+                        let task: StoryTask =
+                            serde_json::from_value(obj).map_err(D::Error::custom)?;
+                        tasks.push(task);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(tasks))
+        }
+    }
 }
 
 // ── Story Plan ──────────────────────────────────
@@ -269,13 +337,19 @@ pub struct Story {
     pub epic_code: Option<String>,
     pub status: StoryStatus,
     pub points: Option<i32>,
-    /// Structured acceptance criteria — each criterion is testable and trackable.
-    /// Covers happy path, empty state, AND edge cases.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Acceptance criteria — supports both plain strings and structured objects.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flexible_acs"
+    )]
     pub acceptance_criteria: Option<Vec<AcceptanceCriterion>>,
-    /// Structured tasks — each task has a persona, file target, and completion state.
-    /// This IS the implementation plan. Ordered by dependency (architect → backend → frontend → QA).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Tasks — supports both plain strings and structured objects.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flexible_tasks"
+    )]
     pub tasks: Option<Vec<StoryTask>>,
     /// Story codes this depends on (e.g. ["ER-016", "ER-017"]).
     /// Must be completed before this story can start.
@@ -320,6 +394,7 @@ pub enum StoryStatus {
     Deployed,
     Blocked,
     Parked,
+    Rejected,
 }
 
 impl std::fmt::Display for StoryStatus {
@@ -333,6 +408,7 @@ impl std::fmt::Display for StoryStatus {
             StoryStatus::Deployed => "deployed",
             StoryStatus::Blocked => "blocked",
             StoryStatus::Parked => "parked",
+            StoryStatus::Rejected => "rejected",
         };
         write!(f, "{s}")
     }
@@ -376,6 +452,15 @@ pub enum EpicStatus {
     Blocked,
     Closed,
     Abandoned,
+    /// Legacy alias — builders sometimes write "done" instead of "closed"
+    Done,
+}
+
+impl EpicStatus {
+    /// Normalize legacy variants to their canonical form
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Closed | Self::Abandoned | Self::Done)
+    }
 }
 
 impl std::fmt::Display for EpicStatus {
@@ -384,7 +469,7 @@ impl std::fmt::Display for EpicStatus {
             EpicStatus::Active => "active",
             EpicStatus::Planned => "planned",
             EpicStatus::Blocked => "blocked",
-            EpicStatus::Closed => "closed",
+            EpicStatus::Closed | EpicStatus::Done => "closed",
             EpicStatus::Abandoned => "abandoned",
         };
         write!(f, "{s}")

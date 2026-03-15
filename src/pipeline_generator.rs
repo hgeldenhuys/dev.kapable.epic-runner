@@ -325,13 +325,13 @@ pub fn generate_sprint_pipeline(ctx: &SprintPipelineContext) -> PipelineDefiniti
     // -- Stage: deploy (conditional) --
     let retro_depends_on = if ctx.deploy_profile != "none" {
         if let Some(ref app_id) = ctx.deploy_app_id {
+            // Deploy requires admin key — use KAPABLE_ADMIN_API_KEY from env at runtime
             let deploy_cmd = format!(
                 "curl -sf -X POST '{url}/v1/apps/{app_id}/environments/production/deploy' \
-                 -H 'x-api-key: {key}' && \
+                 -H \"x-api-key: $KAPABLE_ADMIN_API_KEY\" && \
                  echo '##kapable[set name=deploy_triggered]true'",
                 url = ctx.api_url,
                 app_id = app_id,
-                key = ctx.api_key,
             );
 
             stages.push(StageDefinition {
