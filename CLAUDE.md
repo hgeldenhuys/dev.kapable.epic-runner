@@ -4,15 +4,23 @@ Rust CLI for epic-scoped autonomous sprint execution on the Kapable platform.
 
 ## Architecture
 
-**Dual-mode binary:**
-- `epic-runner orchestrate <EPIC_CODE>` — thin supervisor: creates sprints, assigns stories, spawns `sprint-run` as child process, reads exit codes
-- `epic-runner sprint-run <SPRINT_ID>` — fat executor: loads ceremony YAML DAG, executes nodes via Kahn's BFS, dispatches Claude headless, streams events to DB in real-time
+**Two execution engines (selectable via `--engine`):**
 
-**Ceremony-as-data:** Sprint ceremonies are defined in YAML DAGs (`src/flow/default_flow.yaml`), not hardcoded Rust. The flow engine supports 9 node types: Source, Harness, Agent, Gate, Loop, Merge, Output, Deploy, Promote.
+### Pipeline Engine (default: `--engine=pipeline`)
+- `epic-runner orchestrate <EPIC_CODE>` — generates PipelineDefinition, submits to platform API, polls for completion
+- `epic-runner pipeline generate <EPIC_CODE>` — outputs pipeline YAML to stdout for inspection/modification
+- `epic-runner pipeline submit <FILE>` — submits a YAML file to the pipeline API
+- Uses `AgentStepRunner` in `kapable-pipeline` crate for Claude CLI dispatch
+- Platform handles: DAG execution, event streaming, persistence, crash recovery
+- Agent steps get `hooks_settings` (stop-gate, track-files) via `--settings` flag
 
-**Parallel execution:** Same-level nodes in Kahn's BFS execute concurrently via `futures::future::join_all`. Gate skip propagation and in-degree updates happen after each level completes.
+### Ceremony Engine (legacy: `--engine=ceremony`)
+- `epic-runner sprint-run <SPRINT_ID>` — fat executor: loads ceremony YAML DAG, executes nodes via Kahn's BFS
+- Ceremony-as-data: Sprint ceremonies defined in YAML DAGs (`src/flow/default_flow.yaml`)
+- 9 node types: Source, Harness, Agent, Gate, Loop, Merge, Output, Deploy, Promote
+- Will be removed once pipeline engine is fully validated
 
-**Real-time streaming:** `EventSink` (mpsc channel → background POST to `/v1/ceremony_events`) bridges sync executor callbacks to async DB writes. Platform WAL→SSE auto-delivers events to any observer.
+**Entity management:** Products, epics, stories, sprints, research, impediments — same regardless of engine.
 
 ## Project Structure
 
@@ -25,9 +33,11 @@ src/
   event_sink.rs        # Real-time ceremony event streaming (mpsc → DB)
   config.rs            # TOML config with project walk
   types.rs             # Domain types (Epic, Sprint, Story, etc.)
-  executor.rs          # Claude Code subprocess dispatch
+  executor.rs          # Claude Code subprocess dispatch (ceremony engine)
   stream.rs            # stream-json line parser
-  supervisor.rs        # Stop-hook loop + rubber duck
+  supervisor.rs        # Stop-hook loop + rubber duck (ceremony engine)
+  pipeline_generator.rs # Generate PipelineDefinition from sprint context (pipeline engine)
+  pipeline_submitter.rs # Submit pipeline to API + poll for completion (pipeline engine)
   builder.rs           # Builder output parsing + story write-back pipeline
   judge.rs             # Verdict parsing + confidence threshold
   scrum_master.rs      # Retrospective output parsing
